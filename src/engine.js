@@ -506,7 +506,16 @@ const RO_EN_TEAMS = {
 export const splitMatch = (match) =>
   match.split(/\s+(?:vs|v)\s+|\s+-\s+/i).map((t) => t.trim()).filter(Boolean)
 
-export async function fetchScoreOnline(sel) {
+export async function fetchScoreOnline(sel, { apiFootballKey } = {}) {
+  // API-Football (cheie proprie) are acoperire mai bună — încercat primul
+  if (apiFootballKey && sel.sport === 'fotbal') {
+    const score = await fetchScoreApiFootball(sel, apiFootballKey).catch(() => null)
+    if (score) return score
+  }
+  return fetchScoreSportsDb(sel)
+}
+
+async function fetchScoreSportsDb(sel) {
   const teams = splitMatch(sel.match)
   if (teams.length < 2) return null
   const en = teams.map((t) => RO_EN_TEAMS[norm(t)] ?? t)
@@ -527,6 +536,38 @@ export async function fetchScoreOnline(sel) {
   const firstWord = norm(en[0]).split(' ')[0]
   const homeIsFirst = home.includes(firstWord) || norm(en[0]).includes(home)
   return homeIsFirst ? score : [score[1], score[0]]
+}
+
+async function fetchScoreApiFootball(sel, key) {
+  const teams = splitMatch(sel.match)
+  if (teams.length < 2) return null
+  const en = teams.map((t) => RO_EN_TEAMS[norm(t)] ?? t)
+  const headers = { 'x-apisports-key': key }
+
+  const tResp = await fetch(
+    `https://v3.football.api-sports.io/teams?search=${encodeURIComponent(en[0])}`,
+    { headers },
+  )
+  if (!tResp.ok) return null
+  const teamId = (await tResp.json())?.response?.[0]?.team?.id
+  if (!teamId) return null
+
+  const fResp = await fetch(
+    `https://v3.football.api-sports.io/fixtures?team=${teamId}&last=15`,
+    { headers },
+  )
+  if (!fResp.ok) return null
+  const fixtures = (await fResp.json())?.response ?? []
+  const oppWord = norm(en[1]).split(' ')[0]
+  const fx = fixtures.find(
+    (f) =>
+      ['FT', 'AET', 'PEN'].includes(f?.fixture?.status?.short) &&
+      (norm(f?.teams?.home?.name ?? '').includes(oppWord) ||
+        norm(f?.teams?.away?.name ?? '').includes(oppWord)),
+  )
+  if (!fx || fx.goals?.home == null || fx.goals?.away == null) return null
+  const homeIsFirst = norm(fx.teams.home.name).includes(norm(en[0]).split(' ')[0])
+  return homeIsFirst ? [fx.goals.home, fx.goals.away] : [fx.goals.away, fx.goals.home]
 }
 
 // ─── Meciuri reale (program oficial, TheSportsDB) ───────────────────────────

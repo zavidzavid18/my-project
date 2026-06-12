@@ -13,7 +13,16 @@ import {
   splitMatch,
 } from './engine.js'
 
-const APP_VERSION = 'v2.1'
+const APP_VERSION = 'v3.0'
+const SETTINGS_KEY = 'betting-analyzer-settings'
+
+const loadSettings = () => {
+  try {
+    return JSON.parse(localStorage.getItem(SETTINGS_KEY)) ?? {}
+  } catch {
+    return {}
+  }
+}
 
 // Meciuri reale din programul WC 2026 (faza grupelor) + tenis pe iarbă
 const MOCK_INPUT = `Qatar vs Elveția | Under 2.5 Goluri | 1.72
@@ -319,6 +328,130 @@ function Suggestions({ suggestions, stake, setStake, onConfirm }) {
   )
 }
 
+// ─── Setări (chei API, salvate doar în browser) ──────────────────────────────
+
+function SettingsPanel({ settings, onSave }) {
+  const [anthropicKey, setAnthropicKey] = useState(settings.anthropicKey ?? '')
+  const [apiFootballKey, setApiFootballKey] = useState(settings.apiFootballKey ?? '')
+  const [saved, setSaved] = useState(false)
+  return (
+    <details className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
+      <summary className="cursor-pointer text-sm font-semibold text-slate-300">
+        ⚙️ Setări API <span className="ml-2 text-xs font-normal text-slate-500">(cheile rămân doar în browserul tău)</span>
+      </summary>
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        <label className="text-xs text-slate-400">
+          Cheie Claude API (asistent AI) — de la console.anthropic.com
+          <input
+            type="password"
+            value={anthropicKey}
+            onChange={(e) => setAnthropicKey(e.target.value)}
+            placeholder="sk-ant-..."
+            className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 font-mono text-xs text-slate-200 outline-none focus:border-emerald-500"
+          />
+        </label>
+        <label className="text-xs text-slate-400">
+          Cheie API-Football (rezultate fotbal extinse) — de la dashboard.api-football.com
+          <input
+            type="password"
+            value={apiFootballKey}
+            onChange={(e) => setApiFootballKey(e.target.value)}
+            placeholder="opțional"
+            className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 font-mono text-xs text-slate-200 outline-none focus:border-emerald-500"
+          />
+        </label>
+      </div>
+      <button
+        onClick={() => { onSave({ anthropicKey: anthropicKey.trim(), apiFootballKey: apiFootballKey.trim() }); setSaved(true); setTimeout(() => setSaved(false), 2000) }}
+        className="mt-3 rounded-lg bg-slate-700 px-3 py-1.5 text-sm font-semibold text-white transition hover:bg-slate-600 active:scale-95"
+      >
+        {saved ? '✓ Salvat' : '💾 Salvează setările'}
+      </button>
+    </details>
+  )
+}
+
+// ─── Asistent AI (Claude, cu cheia utilizatorului) ───────────────────────────
+
+function AiAssistant({ analyzed, bets, anthropicKey }) {
+  const [question, setQuestion] = useState('')
+  const [answer, setAnswer] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const ask = async () => {
+    if (!question.trim() || loading) return
+    setLoading(true)
+    setError('')
+    setAnswer('')
+    try {
+      const { default: Anthropic } = await import('@anthropic-ai/sdk')
+      const client = new Anthropic({ apiKey: anthropicKey, dangerouslyAllowBrowser: true })
+      const profit = bets.reduce((a, b) => a + betProfit(b), 0)
+      const context = [
+        'Selecții analizate acum:',
+        ...analyzed.map((s) =>
+          `- ${s.match} | ${s.market} @${s.odds.toFixed(2)} | prob. model ${(s.modelProb * 100).toFixed(1)}% (impl. ${(s.implied * 100).toFixed(1)}%) | ${s.verdict}`),
+        `Istoric: ${bets.length} bilete, profit total ${profit.toFixed(2)} RON.`,
+        ...bets.slice(0, 10).map((b) => `- [${b.status}] ${b.tip} @${b.cotaTotala.toFixed(2)} miză ${b.miza} RON`),
+      ].join('\n')
+      const response = await client.messages.create({
+        model: 'claude-opus-4-8',
+        max_tokens: 2048,
+        thinking: { type: 'adaptive' },
+        system:
+          'Ești un analist quant de pariuri sportive, prieten cu utilizatorul. Răspunzi în română, concis și concret. ' +
+          'Reguli ale utilizatorului: WC 2026 favorizează Under 2.5 și GG NU pe teren neutru (prob. minimă 45%); ' +
+          'tenis pe iarbă folosește Grass Elo pentru câștigător și statistici de serviciu pentru prop-uri; ' +
+          'cotă minimă 1.50 per selecție pentru turneul Betano. ' +
+          'Subliniază riscurile și încurajează pariatul responsabil. Nu garanta niciodată câștiguri.',
+        messages: [{ role: 'user', content: `${context}\n\nÎntrebarea mea: ${question}` }],
+      })
+      setAnswer(response.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n'))
+    } catch (e) {
+      setError(`Eroare: ${e?.message ?? e}. Verifică cheia în Setări API.`)
+    }
+    setLoading(false)
+  }
+
+  return (
+    <Card title="Analist AI" icon="🤖" accent="border-violet-900/60">
+      {!anthropicKey ? (
+        <p className="text-xs text-slate-400">
+          Pune o cheie Claude API în <span className="font-semibold text-slate-300">⚙️ Setări API</span> (de la{' '}
+          <a href="https://console.anthropic.com" target="_blank" rel="noreferrer" className="text-violet-400 underline">console.anthropic.com</a>)
+          și AI-ul îți va analiza biletele, va explica verdictele și va răspunde la întrebări despre strategie.
+        </p>
+      ) : (
+        <>
+          <div className="flex gap-2">
+            <input
+              value={question}
+              onChange={(e) => setQuestion(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && ask()}
+              placeholder="Ex: Care e cel mai riscant picior din Biletul Sigur?"
+              className="flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 outline-none focus:border-violet-500"
+            />
+            <button
+              onClick={ask}
+              disabled={loading || !question.trim()}
+              className="rounded-lg bg-gradient-to-r from-violet-600 to-violet-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-violet-900/40 transition hover:from-violet-500 hover:to-violet-400 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {loading ? '⏳' : '✨ Întreabă'}
+            </button>
+          </div>
+          {error && <p className="mt-2 text-xs text-rose-400">{error}</p>}
+          {answer && (
+            <div className="mt-3 whitespace-pre-wrap rounded-xl border border-violet-900/40 bg-violet-950/20 p-3 text-sm leading-relaxed text-slate-200">
+              {answer}
+            </div>
+          )}
+        </>
+      )}
+    </Card>
+  )
+}
+
 // ─── Statistici (stil Pikkit) ────────────────────────────────────────────────
 
 const betProfit = (b) =>
@@ -525,6 +658,12 @@ export default function App() {
   const [verifyMsg, setVerifyMsg] = useState('')
   const [loadingReal, setLoadingReal] = useState(false)
   const [importMsg, setImportMsg] = useState('')
+  const [settings, setSettings] = useState(loadSettings)
+
+  const handleSaveSettings = (next) => {
+    setSettings(next)
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(next))
+  }
   const [bets, setBets] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem(STORAGE_KEY)) ?? []
@@ -595,7 +734,7 @@ export default function App() {
       }
       const results = []
       for (const s of pendingSels) {
-        const score = await fetchScoreOnline(s).catch(() => null)
+        const score = await fetchScoreOnline(s, { apiFootballKey: settings.apiFootballKey }).catch(() => null)
         if (score) {
           const teams = splitMatch(s.match)
           results.push({ t1: teams[0], t2: teams[1], s1: score[0], s2: score[1] })
@@ -670,6 +809,8 @@ export default function App() {
         </div>
 
         <div className="mt-5 space-y-5">
+          <SettingsPanel settings={settings} onSave={handleSaveSettings} />
+          <AiAssistant analyzed={analyzed} bets={bets} anthropicKey={settings.anthropicKey} />
           <StatsBar bets={bets} />
           <History
             bets={bets}
