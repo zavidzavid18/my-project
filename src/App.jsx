@@ -6,24 +6,26 @@ import {
   buildSuggestions,
   detectTicketMeta,
   fetchScoreOnline,
+  fetchUpcomingMatches,
   parseRawText,
   parseResults,
   settleSelection,
   splitMatch,
 } from './engine.js'
 
-const APP_VERSION = 'v2.0'
+const APP_VERSION = 'v2.1'
 
-const MOCK_INPUT = `Mexic vs Africa de Sud | Under 2.5 Goluri | 1.72
-Argentina vs Nigeria | GG NU | 1.65
+// Meciuri reale din programul WC 2026 (faza grupelor) + tenis pe iarbă
+const MOCK_INPUT = `Qatar vs Elveția | Under 2.5 Goluri | 1.72
+Argentina vs Algeria | GG NU | 1.65
 Franța vs Senegal | Under 2.5 Goluri | 1.58
 Brazilia vs Maroc | GG NU | 1.80
-Spania vs Japonia | Under 2.5 Goluri | 1.92
+Olanda vs Japonia | Under 2.5 Goluri | 1.92
 Hurkacz vs Fritz | Peste 12.5 Asi Hurkacz | 1.85 | tenis
 Alcaraz vs Rune | Câștigător Meci Alcaraz | 1.55 | tenis
 Rybakina vs Ostapenko | Câștigător Meci Rybakina | 1.62 | tenis
-Isner vs Monfils | Sub 3.5 Duble Greșeli Isner | 1.44 | tenis
-Anglia vs SUA | Peste 2.5 Goluri | 2.10
+Medvedev vs Cilic | Marin Cilic +1.5 Seturi Handicap | 1.70 | tenis
+Anglia vs Croatia | Peste 2.5 Goluri | 2.10
 LA Lakers vs Boston Celtics | Peste 215.5 Puncte | 1.85 | baschet
 NY Yankees vs Boston Red Sox | Câștigător Yankees | 1.72 | baseball`
 
@@ -76,7 +78,7 @@ function SportTag({ sport }) {
 
 // ─── Zona de Import ──────────────────────────────────────────────────────────
 
-function ImportZone({ rawText, setRawText, onProcess }) {
+function ImportZone({ rawText, setRawText, onProcess, onLoadReal, loadingReal, importMsg }) {
   return (
     <Card title="Zona de Import" icon="📥">
       <p className="mb-2 text-xs text-slate-400">
@@ -93,12 +95,23 @@ function ImportZone({ rawText, setRawText, onProcess }) {
         className="w-full resize-y rounded-xl border border-slate-700 bg-slate-950 p-3 font-mono text-xs text-slate-200 outline-none transition focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
         placeholder="Lipește aici meciurile și cotele tale..."
       />
-      <button
-        onClick={onProcess}
-        className="mt-3 w-full rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 px-4 py-2.5 font-semibold text-white shadow-lg shadow-emerald-900/40 transition hover:from-emerald-500 hover:to-emerald-400 active:scale-[0.98]"
-      >
-        ⚡ Procesează
-      </button>
+      <div className="mt-3 flex gap-2">
+        <button
+          onClick={onProcess}
+          className="flex-1 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 px-4 py-2.5 font-semibold text-white shadow-lg shadow-emerald-900/40 transition hover:from-emerald-500 hover:to-emerald-400 active:scale-[0.98]"
+        >
+          ⚡ Procesează
+        </button>
+        <button
+          onClick={onLoadReal}
+          disabled={loadingReal}
+          title="Încarcă următoarele meciuri oficiale din WC 2026 (cotele sunt orientative — pune-le pe cele de la Betano)"
+          className="rounded-xl bg-gradient-to-r from-sky-600 to-sky-500 px-4 py-2.5 font-semibold text-white shadow-lg shadow-sky-900/40 transition hover:from-sky-500 hover:to-sky-400 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {loadingReal ? '⏳ Încarc...' : '📡 Meciuri reale'}
+        </button>
+      </div>
+      {importMsg && <p className="mt-2 text-xs text-slate-400">{importMsg}</p>}
     </Card>
   )
 }
@@ -510,6 +523,8 @@ export default function App() {
   const [stake, setStake] = useState(100)
   const [verifying, setVerifying] = useState(false)
   const [verifyMsg, setVerifyMsg] = useState('')
+  const [loadingReal, setLoadingReal] = useState(false)
+  const [importMsg, setImportMsg] = useState('')
   const [bets, setBets] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem(STORAGE_KEY)) ?? []
@@ -527,6 +542,22 @@ export default function App() {
   const handleProcess = () => {
     setAnalyzed(parseRawText(rawText).map(analyzeSelection))
     setTicketMeta(detectTicketMeta(rawText))
+  }
+
+  const handleLoadReal = async () => {
+    setLoadingReal(true)
+    setImportMsg('')
+    try {
+      const lines = await fetchUpcomingMatches()
+      const text = lines.join('\n')
+      setRawText(text)
+      setAnalyzed(parseRawText(text).map(analyzeSelection))
+      setTicketMeta(null)
+      setImportMsg(`📡 ${lines.length} meciuri oficiale WC 2026 încărcate. Cotele sunt orientative — înlocuiește-le cu cele de pe Betano și apasă din nou Procesează.`)
+    } catch (e) {
+      setImportMsg(`⚠️ Nu am putut încărca programul (${e.message}). Încearcă din nou sau lipește manual.`)
+    }
+    setLoadingReal(false)
   }
 
   const handleImportTicket = () => {
@@ -617,7 +648,14 @@ export default function App() {
 
         <div className="grid gap-5 lg:grid-cols-5">
           <div className="space-y-5 lg:col-span-3">
-            <ImportZone rawText={rawText} setRawText={setRawText} onProcess={handleProcess} />
+            <ImportZone
+              rawText={rawText}
+              setRawText={setRawText}
+              onProcess={handleProcess}
+              onLoadReal={handleLoadReal}
+              loadingReal={loadingReal}
+              importMsg={importMsg}
+            />
             <TicketBanner meta={ticketMeta} analyzed={analyzed} onImport={handleImportTicket} />
             <AnalysisEngine analyzed={analyzed} />
           </div>

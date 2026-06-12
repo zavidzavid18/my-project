@@ -529,6 +529,29 @@ export async function fetchScoreOnline(sel) {
   return homeIsFirst ? score : [score[1], score[0]]
 }
 
+// ─── Meciuri reale (program oficial, TheSportsDB) ───────────────────────────
+// Ia următoarele meciuri din Cupa Mondială și le pune în formatul de import.
+// Cotele generate sunt orientative — utilizatorul le înlocuiește cu cele
+// reale de la bookmaker.
+
+const WORLD_CUP_LEAGUE_ID = 4429
+
+export async function fetchUpcomingMatches() {
+  const url = `https://www.thesportsdb.com/api/v1/json/123/eventsnextleague.php?id=${WORLD_CUP_LEAGUE_ID}`
+  const resp = await fetch(url)
+  if (!resp.ok) throw new Error('API-ul de program este indisponibil')
+  const data = await resp.json()
+  const events = data?.events ?? []
+  if (!events.length) throw new Error('Niciun meci viitor găsit')
+  return events.slice(0, 12).map((e, idx) => {
+    const match = `${e.strHomeTeam} vs ${e.strAwayTeam}`
+    const market = idx % 2 ? 'GG NU' : 'Under 2.5 Goluri'
+    const p = 0.52 + jitter(match, 0.05)
+    const odds = Math.max(1.5, Math.round((1.05 / p) * 100) / 100)
+    return `${match} | ${market} | ${odds.toFixed(2)}`
+  })
+}
+
 // ─── Generator de bilete ────────────────────────────────────────────────────
 
 const combine = (sels) => ({
