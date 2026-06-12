@@ -13,7 +13,7 @@ import {
   splitMatch,
 } from './engine.js'
 
-const APP_VERSION = 'v3.0'
+const APP_VERSION = 'v3.1'
 const SETTINGS_KEY = 'betting-analyzer-settings'
 
 const loadSettings = () => {
@@ -155,8 +155,27 @@ function TicketBanner({ meta, analyzed, onImport }) {
 
 function AnalysisEngine({ analyzed }) {
   const [expanded, setExpanded] = useState(null)
+  const [showAll, setShowAll] = useState(false)
+  const evCount = analyzed.filter((s) => s.verdict === '+EV').length
+  const isHuge = analyzed.length > 50
+  const visible = (isHuge && !showAll ? analyzed.filter((s) => s.verdict === '+EV') : analyzed).slice(0, 300)
   return (
     <Card title="Motorul de Analiză" icon="🧠">
+      {isHuge && (
+        <div className="mb-3 flex flex-wrap items-center gap-3 text-xs text-slate-400">
+          <span>
+            <span className="font-mono font-bold text-slate-100">{analyzed.length}</span> selecții procesate ·{' '}
+            <span className="font-mono font-bold text-emerald-400">{evCount}</span> +EV
+          </span>
+          <button
+            onClick={() => setShowAll(!showAll)}
+            className="rounded-lg border border-slate-700 px-2 py-1 font-semibold text-slate-300 transition hover:bg-slate-800"
+          >
+            {showAll ? '✅ Arată doar +EV' : `📋 Arată toate (${analyzed.length})`}
+          </button>
+          {visible.length === 300 && <span className="text-slate-500">(afișate primele 300)</span>}
+        </div>
+      )}
       {analyzed.length === 0 ? (
         <p className="text-sm text-slate-500">Nicio selecție procesată. Lipește textul și apasă „Procesează".</p>
       ) : (
@@ -172,7 +191,7 @@ function AnalysisEngine({ analyzed }) {
               </tr>
             </thead>
             <tbody>
-              {analyzed.map((s) => (
+              {visible.map((s) => (
                 <SelectionRow
                   key={s.id}
                   s={s}
@@ -522,6 +541,81 @@ function StatsBar({ bets }) {
   )
 }
 
+// ─── Calendar lunar (stil Pikkit) ────────────────────────────────────────────
+
+const MONTH_NAMES = ['Ianuarie', 'Februarie', 'Martie', 'Aprilie', 'Mai', 'Iunie', 'Iulie', 'August', 'Septembrie', 'Octombrie', 'Noiembrie', 'Decembrie']
+
+const parseBetDate = (b) => {
+  if (b.ts) return new Date(b.ts)
+  const m = (b.data ?? '').match(/(\d{2})\.(\d{2})\.(\d{4})/)
+  return m ? new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1])) : null
+}
+
+function CalendarView({ bets }) {
+  const [month, setMonth] = useState(() => {
+    const now = new Date()
+    return new Date(now.getFullYear(), now.getMonth(), 1)
+  })
+
+  const days = {}
+  for (const b of bets) {
+    const d = parseBetDate(b)
+    if (!d || d.getFullYear() !== month.getFullYear() || d.getMonth() !== month.getMonth()) continue
+    const day = d.getDate()
+    days[day] ??= { profit: 0, pending: 0, settled: 0 }
+    if (b.status === 'În așteptare') days[day].pending += 1
+    else {
+      days[day].settled += 1
+      days[day].profit += betProfit(b)
+    }
+  }
+  const monthProfit = Object.values(days).reduce((a, d) => a + d.profit, 0)
+  const daysInMonth = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate()
+  const firstDow = new Date(month.getFullYear(), month.getMonth(), 1).getDay() // 0 = duminică
+  const shift = (delta) => setMonth(new Date(month.getFullYear(), month.getMonth() + delta, 1))
+
+  const tile = (day) => {
+    const d = days[day]
+    if (!d) return { cls: 'bg-slate-900/60 text-slate-600', label: '' }
+    if (d.settled === 0) return { cls: 'bg-sky-500/15 text-sky-300 border border-sky-500/20', label: `${d.pending} act.` }
+    const p = d.profit
+    return p >= 0
+      ? { cls: 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/20', label: `+${p.toFixed(0)}` }
+      : { cls: 'bg-rose-500/15 text-rose-400 border border-rose-500/20', label: p.toFixed(0) }
+  }
+
+  return (
+    <Card title="Calendar Profit" icon="📅">
+      <div className="mb-3 flex items-center justify-between">
+        <button onClick={() => shift(-1)} className="rounded-lg px-3 py-1 text-slate-400 transition hover:bg-slate-800 hover:text-slate-200">‹</button>
+        <div className="text-center">
+          <span className="text-lg font-bold text-slate-100">{MONTH_NAMES[month.getMonth()]} {month.getFullYear()}</span>
+          <span className={`ml-2 font-mono text-sm font-bold ${monthProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+            {monthProfit >= 0 ? '+' : ''}{monthProfit.toFixed(1)} RON
+          </span>
+        </div>
+        <button onClick={() => shift(1)} className="rounded-lg px-3 py-1 text-slate-400 transition hover:bg-slate-800 hover:text-slate-200">›</button>
+      </div>
+      <div className="grid grid-cols-7 gap-1.5 text-center">
+        {['D', 'L', 'Ma', 'Mi', 'J', 'V', 'S'].map((d, i) => (
+          <div key={i} className="pb-1 text-[10px] uppercase tracking-wider text-slate-500">{d}</div>
+        ))}
+        {Array.from({ length: firstDow }).map((_, i) => <div key={`e${i}`} />)}
+        {Array.from({ length: daysInMonth }).map((_, i) => {
+          const day = i + 1
+          const t = tile(day)
+          return (
+            <div key={day} className={`rounded-lg px-1 py-1.5 ${t.cls}`}>
+              <div className="text-[10px] opacity-60">{day}</div>
+              <div className="font-mono text-[11px] font-bold leading-tight">{t.label}</div>
+            </div>
+          )
+        })}
+      </div>
+    </Card>
+  )
+}
+
 // ─── Istoric Pariuri ─────────────────────────────────────────────────────────
 
 function BetCard({ bet, onStatusChange, onDelete }) {
@@ -703,6 +797,7 @@ export default function App() {
     if (!ticketMeta || analyzed.length === 0) return
     const bet = {
       id: Date.now() + Math.random(),
+      ts: Date.now(),
       data: new Date().toLocaleString('ro-RO', { dateStyle: 'short', timeStyle: 'short' }),
       tip: `Bilet importat (${analyzed.length} sel.)`,
       selections: analyzed,
@@ -756,6 +851,7 @@ export default function App() {
     setBets((prev) => [
       {
         id: Date.now() + Math.random(),
+        ts: Date.now(),
         data: new Date().toLocaleString('ro-RO', { dateStyle: 'short', timeStyle: 'short' }),
         tip,
         selections: parlay.selections,
@@ -812,6 +908,7 @@ export default function App() {
           <SettingsPanel settings={settings} onSave={handleSaveSettings} />
           <AiAssistant analyzed={analyzed} bets={bets} anthropicKey={settings.anthropicKey} />
           <StatsBar bets={bets} />
+          <CalendarView bets={bets} />
           <History
             bets={bets}
             onStatusChange={handleStatusChange}

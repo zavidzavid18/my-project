@@ -120,6 +120,31 @@ export function parseRawText(raw) {
       continue
     }
 
+    // Format "Cote filtrate": "01 — Echipa1 vs Echipa2" urmat de piețe
+    // grupate (antet de grup, apoi linii "SELECȚIE — COTĂ")
+    const matchHeader = line.match(/^\d{1,3}\s*[—–-]\s*(.+?\s+vs\s+.+)$/i)
+    if (matchHeader) {
+      const match = matchHeader[1].trim()
+      let group = ''
+      let j = i + 1
+      while (j < lines.length && !/^\d{1,3}\s*[—–-]\s*.+?\s+vs\s+/i.test(lines[j])) {
+        const l = lines[j]
+        if (/^-{4,}/.test(l)) { j += 1; continue }
+        const selLine = l.match(/^(.+?)\s+[—–-]\s+(\d{1,2}[.,]\d{2})\s*$/)
+        if (selLine && group) {
+          const odds = num(selLine[2])
+          if (odds > 1) {
+            selections.push(classify({ match, market: `${group}: ${selLine[1].trim()}`, odds, sportHint: 'fotbal' }))
+          }
+        } else if (!isDateLine(l) && !/·|cupa mondial|grupa\b|gr\./i.test(l)) {
+          group = l
+        }
+        j += 1
+      }
+      i = j
+      continue
+    }
+
     // Format simplu cu "|"
     if (line.includes('|')) {
       const parts = line.split('|').map((p) => p.trim()).filter(Boolean)
@@ -202,7 +227,7 @@ function classify({ match, market, odds, sportHint }) {
   }
 
   let marketType = 'altele'
-  if (/under\s*2[.,]5|sub\s*2[.,]5/.test(m)) marketType = 'under25'
+  if (/under\s*2[.,]5|sub\s*2[.,]5|2[.,]5\s*(sub|under)/.test(m)) marketType = 'under25'
   else if (/gg\s*nu|ngg|nu marcheaza ambele/.test(m)) marketType = 'ggnu'
   else if (/asi|aces/.test(m)) marketType = 'prop_asi'
   else if (/duble|double fault/.test(m)) marketType = 'prop_duble'
@@ -396,7 +421,19 @@ export function settleSelection(sel) {
   }
 
   if (sel.sport !== 'fotbal') return null
+  // Cornere, șuturi, salvări, reprize, props de jucător — nu se pot decide
+  // din scorul final; rămân pe validare manuală.
+  if (/cornere|corner|sutur|mingi salvate|repriz[ăa]|cartonas|jucator|player/.test(m)) return null
   const total = a + b
+
+  if (/gg sau peste 2[.,]5/.test(m)) {
+    const yes = (a > 0 && b > 0) || total > 2.5
+    return res(/\bnu$/.test(pick) ? !yes : yes)
+  }
+  if (/gg sau egalitate/.test(m)) {
+    const yes = (a > 0 && b > 0) || a === b
+    return res(/\bnu$/.test(pick) ? !yes : yes)
+  }
 
   // Combo "1X2 & Total goluri": ambele condiții trebuie să fie adevărate
   if (/1x2\s*&\s*total/.test(m)) {
@@ -417,13 +454,16 @@ export function settleSelection(sel) {
     const yes = a > 0 && b > 0
     return res(/\bnu$/.test(pick) ? !yes : yes)
   }
+  // Ambele ordini: "Peste 2.5" și "2.5 PESTE"
   const ou = m.match(/(peste|over|sub|under)\s*(\d+[.,]5)/)
-  if (ou) {
-    const line = num(ou[2])
+  const ou2 = ou ? null : m.match(/(\d+[.,]5)\s*(peste|over|sub|under)/)
+  if (ou || ou2) {
+    const line = num(ou ? ou[2] : ou2[1])
+    const dir = ou ? ou[1] : ou2[2]
     // dacă piața numește o echipă ("Maroc - Total goluri"), se ia doar scorul ei
     const side = sideOf(m.split(':')[0])
     const value = side === -1 ? total : sel.score[side]
-    return res(ou[1] === 'sub' || ou[1] === 'under' ? value < line : value > line)
+    return res(dir === 'sub' || dir === 'under' ? value < line : value > line)
   }
   if (sel.marketType === 'sansa_dubla') {
     if (pick.includes('1x')) return res(a >= b)
@@ -432,9 +472,11 @@ export function settleSelection(sel) {
     return null
   }
   if (sel.marketType === 'winner') {
-    if (pick === '1') return res(a > b)
-    if (pick === '2') return res(b > a)
-    if (pick === 'x') return res(a === b)
+    // "1 (Mexic)" → token "1"
+    const token = pick.split(/[\s(]+/)[0]
+    if (token === '1') return res(a > b)
+    if (token === '2') return res(b > a)
+    if (token === 'x') return res(a === b)
     const side = sideOf(pick)
     return side === -1 ? null : res(sel.score[side] > sel.score[1 - side])
   }
