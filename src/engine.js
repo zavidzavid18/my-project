@@ -630,7 +630,14 @@ async function fetchScoreTennis(sel) {
       const evText = norm(ev.strEvent ?? '')
       firstIsHome = evText.indexOf(l1) <= evText.indexOf(l2)
     }
-    const finished = /finished|ft|ended/i.test(ev.strStatus ?? '') || !/live|set|progress/i.test(ev.strStatus ?? '')
+    // PRUDENT: un meci e considerat încheiat doar cu confirmare explicită
+    // SAU dacă scorul pe seturi arată complet (cineva are 2 seturi, best-of-3).
+    // Status gol + scor parțial (1-0, 1-1) = meci în desfășurare, NU se decide.
+    const status = ev.strStatus ?? ''
+    const explicitFinished = /finished|\bft\b|ended|aet|retired|walkover/i.test(status)
+    const explicitLive = /live|progress|set\b|1st|2nd|3rd|4th|5th|\bht\b/i.test(status)
+    const looksComplete = Math.max(score[0], score[1]) >= 2 && score[0] !== score[1]
+    const finished = explicitFinished || (!explicitLive && looksComplete)
     return { score: firstIsHome ? score : [score[1], score[0]], finished }
   }
   return null
@@ -646,8 +653,11 @@ async function fetchScoreSportsDb(sel) {
   const resp = await fetch(url)
   if (!resp.ok) return null
   const data = await resp.json()
+  // doar evenimente din ultimele 7 zile — altfel riscăm să luăm o
+  // întâlnire veche dintre aceleași echipe drept rezultatul curent
+  const cutoff = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10)
   const finished = (data?.event ?? []).filter(
-    (e) => e.intHomeScore != null && e.intAwayScore != null,
+    (e) => e.intHomeScore != null && e.intAwayScore != null && (e.dateEvent ?? '') >= cutoff,
   )
   if (!finished.length) return null
   finished.sort((a, b) => (b.dateEvent ?? '').localeCompare(a.dateEvent ?? ''))

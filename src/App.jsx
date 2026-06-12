@@ -13,7 +13,7 @@ import {
   splitMatch,
 } from './engine.js'
 
-const APP_VERSION = 'v4.3'
+const APP_VERSION = 'v4.4'
 const SETTINGS_KEY = 'betting-analyzer-settings'
 
 const loadSettings = () => {
@@ -540,7 +540,8 @@ function CalendarView({ bets }) {
 
 // ─── Istoric Pariuri ─────────────────────────────────────────────────────────
 
-function BetCard({ bet, onStatusChange, onDelete }) {
+function BetCard({ bet, onStatusChange, onDelete, onReset }) {
+  const hasAutoData = bet.selections.some((s) => s.score || s.liveScore) || bet.status !== 'În așteptare'
   const profit = betProfit(bet)
   const payout = bet.miza * bet.cotaTotala
   return (
@@ -563,6 +564,15 @@ function BetCard({ bet, onStatusChange, onDelete }) {
             <option>Câștigat</option>
             <option>Pierdut</option>
           </select>
+          {onReset && hasAutoData && (
+            <button
+              onClick={() => onReset(bet.id)}
+              className="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-400 transition hover:bg-amber-500/10 hover:text-amber-400"
+              title="Date eronate? Șterge scorurile găsite automat și readu biletul În așteptare"
+            >
+              ↺ Resetează
+            </button>
+          )}
           <button
             onClick={() => onDelete(bet.id)}
             className="rounded-lg px-2 py-1 text-xs text-slate-500 transition hover:bg-rose-500/10 hover:text-rose-400"
@@ -618,7 +628,7 @@ const SORTS = {
   castig: { label: 'Câștig potențial ↓', fn: (a, b) => b.miza * b.cotaTotala - a.miza * a.cotaTotala },
 }
 
-function History({ bets, onStatusChange, onDelete, onValidate, onVerifyOnline, verifying, verifyMsg, title = 'Bilete Active', emptyMsg = 'Niciun bilet activ. Confirmă o sugestie sau importă un bilet din tabul Analiză.' }) {
+function History({ bets, onStatusChange, onDelete, onReset, onValidate, onVerifyOnline, verifying, verifyMsg, title = 'Bilete Active', emptyMsg = 'Niciun bilet activ. Confirmă o sugestie sau importă un bilet din tabul Analiză.' }) {
   const [resultsText, setResultsText] = useState('')
   const [sortBy, setSortBy] = useState('recente')
   const pendingCount = bets.filter((b) => b.status === 'În așteptare').length
@@ -683,7 +693,7 @@ function History({ bets, onStatusChange, onDelete, onValidate, onVerifyOnline, v
       ) : (
         <div className="space-y-3">
           {sorted.map((b) => (
-            <BetCard key={b.id} bet={b} onStatusChange={onStatusChange} onDelete={onDelete} />
+            <BetCard key={b.id} bet={b} onStatusChange={onStatusChange} onDelete={onDelete} onReset={onReset} />
           ))}
         </div>
       )}
@@ -858,6 +868,20 @@ export default function App() {
 
   const handleDelete = (id) => setBets((prev) => prev.filter((b) => b.id !== id))
 
+  // validare automată greșită? șterge scorurile găsite și readu În așteptare
+  const handleResetBet = (id) =>
+    setBets((prev) =>
+      prev.map((b) =>
+        b.id === id
+          ? {
+              ...b,
+              status: 'În așteptare',
+              selections: b.selections.map(({ score, liveScore, ...s }) => s),
+            }
+          : b,
+      ),
+    )
+
   const activeBets = bets.filter((b) => b.status === 'În așteptare')
   const settledBets = bets.filter((b) => b.status !== 'În așteptare')
 
@@ -932,6 +956,7 @@ export default function App() {
             bets={activeBets}
             onStatusChange={handleStatusChange}
             onDelete={handleDelete}
+            onReset={handleResetBet}
             onValidate={handleValidate}
             onVerifyOnline={handleVerifyOnline}
             verifying={verifying}
@@ -949,7 +974,7 @@ export default function App() {
               ) : (
                 <div className="space-y-3">
                   {settledBets.map((b) => (
-                    <BetCard key={b.id} bet={b} onStatusChange={handleStatusChange} onDelete={handleDelete} />
+                    <BetCard key={b.id} bet={b} onStatusChange={handleStatusChange} onDelete={handleDelete} onReset={handleResetBet} />
                   ))}
                 </div>
               )}
