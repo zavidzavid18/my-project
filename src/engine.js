@@ -569,6 +569,12 @@ export const splitMatch = (match) =>
 // Returnează { score, finished } — finished=false înseamnă meci în desfășurare
 // (scor live, biletul NU se decide încă).
 export async function fetchScoreOnline(sel, { apiFootballKey } = {}) {
+  // Tenis: căutarea după numele exact al evenimentului eșuează des —
+  // se folosește lista meciurilor pe zile, potrivită după numele jucătorilor.
+  if (sel.sport === 'tenis') {
+    const r = await fetchScoreTennis(sel).catch(() => null)
+    if (r) return r
+  }
   // API-Football (cheie proprie) are acoperire mai bună — încercat primul
   if (apiFootballKey && sel.sport === 'fotbal') {
     const r = await fetchScoreApiFootball(sel, apiFootballKey).catch(() => null)
@@ -576,6 +582,58 @@ export async function fetchScoreOnline(sel, { apiFootballKey } = {}) {
   }
   const score = await fetchScoreSportsDb(sel)
   return score ? { score, finished: true } : null
+}
+
+// ─── Tenis: lista meciurilor pe zi, cache 3 minute ──────────────────────────
+
+const tennisDayCache = new Map()
+const TENNIS_CACHE_TTL = 3 * 60 * 1000
+
+function tennisEventsForDate(dateStr) {
+  const cached = tennisDayCache.get(dateStr)
+  if (cached && Date.now() - cached.at < TENNIS_CACHE_TTL) return cached.promise
+  const promise = (async () => {
+    const resp = await fetch(
+      `https://www.thesportsdb.com/api/v1/json/123/eventsday.php?d=${dateStr}&s=Tennis`,
+    )
+    if (!resp.ok) return []
+    return (await resp.json())?.events ?? []
+  })().catch(() => [])
+  tennisDayCache.set(dateStr, { at: Date.now(), promise })
+  return promise
+}
+
+const lastName = (p) => {
+  const words = norm(p).replace(/,/g, ' ').split(/\s+/).filter((w) => w.length > 2)
+  return words[words.length - 1] ?? norm(p)
+}
+
+async function fetchScoreTennis(sel) {
+  const players = splitMatch(sel.match)
+  if (players.length < 2) return null
+  const [l1, l2] = players.map(lastName)
+  for (let back = 0; back < 4; back++) {
+    const d = new Date(Date.now() - back * 86400000).toISOString().slice(0, 10)
+    const events = await tennisEventsForDate(d)
+    const ev = events.find((e) => {
+      const text = norm(`${e.strHomeTeam ?? ''} ${e.strAwayTeam ?? ''} ${e.strEvent ?? ''}`)
+      return text.includes(l1) && text.includes(l2)
+    })
+    if (!ev) continue
+    if (ev.intHomeScore == null || ev.intAwayScore == null) continue
+    const score = [Number(ev.intHomeScore), Number(ev.intAwayScore)]
+    // orientare: jucătorul 1 din bilet e "acasă" în eveniment?
+    const home = norm(ev.strHomeTeam ?? '')
+    let firstIsHome
+    if (home) firstIsHome = home.includes(l1)
+    else {
+      const evText = norm(ev.strEvent ?? '')
+      firstIsHome = evText.indexOf(l1) <= evText.indexOf(l2)
+    }
+    const finished = /finished|ft|ended/i.test(ev.strStatus ?? '') || !/live|set|progress/i.test(ev.strStatus ?? '')
+    return { score: firstIsHome ? score : [score[1], score[0]], finished }
+  }
+  return null
 }
 
 async function fetchScoreSportsDb(sel) {
