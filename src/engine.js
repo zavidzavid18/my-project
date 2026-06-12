@@ -2,9 +2,15 @@
 // Reguli:
 //  • WC 2026 (teren neutru): modelul favorizează "Under 2.5" și "GG NU".
 //    Probabilitate minimă acceptată de model: 45%.
-//  • Tenis iarbă: Câștigător Meci → Grass Elo. Prop-uri (Asi / Duble Greșeli)
-//    → statistici de serviciu, NU Elo.
+//  • Tenis iarbă: Câștigător Meci / Handicap Set / Câștigă un Set → Grass Elo.
+//    Prop-uri (Asi / Duble Greșeli) → statistici de serviciu, NU Elo.
+//  • Baschet & Baseball: model generic pe cote (Elo intern).
 //  • Turneu Betano: cotă minimă per selecție >= 1.50.
+//
+// Formate de import acceptate:
+//  1. Simplu:   "Echipa1 vs Echipa2 | Piață | Cotă | sport"
+//  2. Betano:   bilet copiat (blocuri marcate cu "sport-icon")
+//  3. Superbet: listă copiată (blocuri marcate cu "International")
 
 export const COTA_MINIMA = 1.5
 export const PROB_MINIMA_FOTBAL = 0.45
@@ -14,14 +20,18 @@ export const PROB_MINIMA_FOTBAL = 0.45
 const GRASS_ELO = {
   alcaraz: 2180, djokovic: 2150, sinner: 2090, rybakina: 2080,
   fritz: 2010, hurkacz: 2005, swiatek: 1985, paolini: 1980,
-  rune: 1950, ostapenko: 1945, isner: 1930, monfils: 1860,
-  opelka: 1920, shelton: 1940, gauff: 1960, sabalenka: 2020,
+  medvedev: 1975, bublik: 1975, gauff: 1960, mpetshi: 1960,
+  lehecka: 1955, rune: 1950, shelton: 1940, cilic: 1945,
+  tiafoe: 1945, ostapenko: 1945, isner: 1930, opelka: 1920,
+  sabalenka: 2020, monfils: 1860,
 }
 
 const SERVE_STATS = {
   // [asi/meci pe iarbă, duble greșeli/meci]
   hurkacz: [14.2, 2.4], isner: [17.1, 2.0], opelka: [16.3, 2.6],
-  fritz: [12.4, 2.8], shelton: [13.1, 3.4], alcaraz: [7.8, 2.9],
+  mpetshi: [15.8, 3.0], bublik: [13.6, 4.1], fritz: [12.4, 2.8],
+  shelton: [13.1, 3.4], cilic: [11.2, 2.7], medvedev: [8.4, 2.5],
+  tiafoe: [9.6, 2.9], lehecka: [10.1, 2.6], alcaraz: [7.8, 2.9],
   djokovic: [6.5, 2.2], rune: [8.2, 3.1], monfils: [9.0, 3.0],
   rybakina: [7.4, 2.6], ostapenko: [4.1, 4.2], sabalenka: [5.2, 3.8],
 }
@@ -43,52 +53,146 @@ const findKey = (table, text) => {
   return Object.keys(table).find((k) => t.includes(k))
 }
 
-// ─── Parser text brut ───────────────────────────────────────────────────────
-// Format acceptat: "Echipa1 vs Echipa2 | Piață | Cotă [| sport]"
-// Fallback: ultima valoare numerică din linie = cota.
+// ─── Parser text brut (multi-format) ────────────────────────────────────────
+
+const num = (s) => parseFloat(s.replace(',', '.'))
+const isOddLine = (l) => {
+  if (!/^\d{1,3}[.,]\d{2}$/.test(l)) return false
+  const v = num(l)
+  return v > 1 && v < 100
+}
+const isDateLine = (l) =>
+  /\d{1,2}:\d{2}/.test(l) ||
+  /^(ieri|azi|astazi|astăzi|maine|mâine|lun|mar|mie|joi|vin|sam|sâm|dum)\b[\s,.]/i.test(l) ||
+  /\d{1,2}[.,]?\s*(ian|feb|mar|apr|mai|iun|iul|aug|sep|oct|nov|dec)\b/i.test(l) ||
+  /\d{2}[.,]\d{2}[.,]\d{4}/.test(l)
+const isFooterLine = (l) =>
+  /cot[ăa] total[ăa]|bani reali|c[âa][șs]tig(uri)?\s+(poten[țt]ial|posibile)/i.test(l) ||
+  /^\d{3,}[-–]|^(ron|lei)$|\d\s*(lei|ron)\s*$/i.test(l) ||
+  /^vezi /i.test(l)
 
 export function parseRawText(raw) {
+  const lines = raw.split('\n').map((l) => l.trim()).filter(Boolean)
   const selections = []
-  for (const line of raw.split('\n')) {
-    const trimmed = line.trim()
-    if (!trimmed) continue
+  let i = 0
 
-    let match, market, odds, sportHint
-    const parts = trimmed.split('|').map((p) => p.trim()).filter(Boolean)
-    if (parts.length >= 3) {
-      ;[match, market] = parts
-      odds = parseFloat(parts[2].replace(',', '.'))
-      sportHint = parts[3]
-    } else {
-      const m = trimmed.match(/(\d+[.,]\d+)\s*$/)
-      if (!m) continue
-      odds = parseFloat(m[1].replace(',', '.'))
-      match = trimmed.slice(0, m.index).trim()
-      market = ''
+  while (i < lines.length) {
+    const line = lines[i]
+
+    // Format Betano: sport-icon / selecție / cotă / piață / meci
+    if (/^sport-icon$/i.test(line)) {
+      const [sel, odds, market, match] = lines.slice(i + 1, i + 5)
+      if (sel && odds && isOddLine(odds) && market && match && /[a-zăâîșț]/i.test(match)) {
+        selections.push(classify({ match, market: `${market}: ${sel}`, odds: num(odds) }))
+        i += 5
+        continue
+      }
+      i += 1
+      continue
     }
-    if (!odds || odds <= 1) continue
 
-    selections.push(classify({ match, market: market || match, odds, sportHint }))
+    // Format Superbet: bloc început cu "International" (sau altă categorie)
+    if (/^international$|^nba$|^mlb$|^atp\b|^wta\b/i.test(line)) {
+      const block = []
+      let j = i + 1
+      while (
+        j < lines.length &&
+        !/^international$|^nba$|^mlb$|^sport-icon$/i.test(lines[j]) &&
+        !isFooterLine(lines[j])
+      ) {
+        block.push(lines[j])
+        j += 1
+      }
+      const parsed = parseSuperbetBlock(block, line)
+      if (parsed) selections.push(classify(parsed))
+      i = j
+      continue
+    }
+
+    // Format simplu cu "|"
+    if (line.includes('|')) {
+      const parts = line.split('|').map((p) => p.trim()).filter(Boolean)
+      if (parts.length >= 3) {
+        const odds = num(parts[2])
+        if (odds > 1) {
+          selections.push(classify({ match: parts[0], market: parts[1], odds, sportHint: parts[3] }))
+        }
+      }
+      i += 1
+      continue
+    }
+
+    // Fallback: "text ... cotă" pe o singură linie
+    if (!isDateLine(line) && !isFooterLine(line)) {
+      const m = line.match(/(\d+[.,]\d+)\s*$/)
+      if (m) {
+        const match = line.slice(0, m.index).trim()
+        const odds = num(m[1])
+        if (match.length >= 3 && /[a-zăâîșț]/i.test(match) && odds > 1 && odds < 100) {
+          selections.push(classify({ match, market: match, odds }))
+        }
+      }
+    }
+    i += 1
   }
   return selections
 }
 
+function parseSuperbetBlock(block, header) {
+  const competition = block[0] ?? ''
+  const body = block.slice(1)
+
+  let oddsIdx = -1
+  for (let k = body.length - 1; k >= 0; k--) {
+    if (isOddLine(body[k])) { oddsIdx = k; break }
+  }
+  if (oddsIdx < 2) return null
+
+  const odds = num(body[oddsIdx])
+  const market = body[oddsIdx - 1]
+  const pick = body[oddsIdx - 2]
+  const teams = body
+    .slice(0, oddsIdx - 2)
+    .filter((l) => !/^adaug[ăa]$/i.test(l) && !isDateLine(l) && !/^\d+$/.test(l) && !isOddLine(l))
+  if (teams.length < 2) return null
+
+  const ctx = `${header} ${competition}`
+  let sportHint = 'fotbal'
+  if (/nba|baschet|euroliga/i.test(ctx)) sportHint = 'baschet'
+  else if (/mlb|baseball/i.test(ctx)) sportHint = 'baseball'
+  else if (/atp|wta|tenis/i.test(ctx)) sportHint = 'tenis'
+
+  return {
+    match: `${teams[teams.length - 2]} vs ${teams[teams.length - 1]}`,
+    market: `${market}: ${pick}`,
+    odds,
+    sportHint,
+  }
+}
+
 function classify({ match, market, odds, sportHint }) {
   const m = norm(market)
-  const tennisKeywords = /asi|aces|duble|double fault|set|game|tiebreak|tenis/
-  const sport =
-    (sportHint && norm(sportHint).includes('tenis')) ||
-    tennisKeywords.test(m) ||
-    findKey(GRASS_ELO, match)
-      ? 'tenis'
-      : 'fotbal'
+  const hint = sportHint ? norm(sportHint) : ''
+
+  let sport
+  if (hint.includes('tenis')) sport = 'tenis'
+  else if (hint.includes('basket') || hint.includes('baschet')) sport = 'baschet'
+  else if (hint.includes('baseball')) sport = 'baseball'
+  else if (/asi|aces|duble|double fault|tiebreak|sa castige un set|castige un set|handicap meci \(set\)/.test(m)) sport = 'tenis'
+  else if (/puncte|nba|baschet/.test(m)) sport = 'baschet'
+  else if (/mlb|baseball|home run|inning/.test(m)) sport = 'baseball'
+  else if (findKey(GRASS_ELO, match)) sport = 'tenis'
+  else sport = 'fotbal'
 
   let marketType = 'altele'
   if (/under\s*2[.,]5|sub\s*2[.,]5/.test(m)) marketType = 'under25'
-  else if (/gg\s*nu|ngg|nu\s*marcheaza ambele/.test(m)) marketType = 'ggnu'
+  else if (/gg\s*nu|ngg|nu marcheaza ambele/.test(m)) marketType = 'ggnu'
   else if (/asi|aces/.test(m)) marketType = 'prop_asi'
   else if (/duble|double fault/.test(m)) marketType = 'prop_duble'
-  else if (/castigator|winner|victorie|ml\b/.test(m)) marketType = 'winner'
+  else if (/handicap.*set|set.*handicap/.test(m)) marketType = 'handicap_set'
+  else if (/castige un set/.test(m)) marketType = 'castiga_set'
+  else if (/sansa dubla/.test(m)) marketType = 'sansa_dubla'
+  else if (/castigator|winner|victorie|final|ml\b|^1x2/.test(m)) marketType = 'winner'
   else if (/peste|over/.test(m)) marketType = 'over'
 
   return { id: hash(match + market + odds), match, market, odds, sport, marketType }
@@ -107,10 +211,20 @@ export function analyzeSelection(sel) {
       engine = 'Statistici Serviciu'
       modelProb = serveModel(sel)
       reasons.push('Prop evaluat pe statistici de serviciu (NU pe Elo).')
+    } else if (sel.marketType === 'handicap_set' || sel.marketType === 'castiga_set') {
+      engine = 'Grass Elo (Seturi)'
+      modelProb = setMarketModel(sel)
+      reasons.push('Probabilitate pe seturi derivată din Grass Elo.')
     } else {
       engine = 'Grass Elo'
       modelProb = grassEloModel(sel)
     }
+  } else if (sel.sport === 'baschet') {
+    engine = 'Model Baschet'
+    modelProb = clamp(implied + 0.03 + jitter(sel.match, 0.025), 0.05, 0.95)
+  } else if (sel.sport === 'baseball') {
+    engine = 'Model Baseball'
+    modelProb = clamp(implied + 0.025 + jitter(sel.match, 0.025), 0.05, 0.95)
   } else {
     engine = 'Model Goluri (teren neutru)'
     if (sel.marketType === 'under25' || sel.marketType === 'ggnu') {
@@ -145,8 +259,8 @@ export function analyzeSelection(sel) {
   return { ...sel, implied, modelProb, edge, ev, engine, verdict, reasons }
 }
 
-function grassEloModel(sel) {
-  const players = sel.match.split(/\s+(?:vs|v|-)\s+/i).map((p) => p.trim())
+function pickedPlayerProb(sel) {
+  const players = sel.match.split(/\s+(?:vs|v)\s+|\s+-\s+/i).map((p) => p.trim())
   const [p1 = sel.match, p2 = ''] = players
   const eloOf = (name) => {
     const key = findKey(GRASS_ELO, name)
@@ -155,14 +269,26 @@ function grassEloModel(sel) {
   // Selecția pariată: jucătorul menționat în piață, altfel primul.
   const pickedIsP2 = p2 && norm(sel.market).includes(norm(p2).split(' ')[0])
   const [me, opp] = pickedIsP2 ? [p2, p1] : [p1, p2 || p1]
-  const prob = 1 / (1 + Math.pow(10, (eloOf(opp) - eloOf(me)) / 400))
-  return clamp(prob + jitter(sel.match, 0.02), 0.05, 0.95)
+  return 1 / (1 + Math.pow(10, (eloOf(opp) - eloOf(me)) / 400))
+}
+
+function grassEloModel(sel) {
+  return clamp(pickedPlayerProb(sel) + jitter(sel.match, 0.02), 0.05, 0.95)
+}
+
+function setMarketModel(sel) {
+  const pMatch = pickedPlayerProb(sel)
+  const pSet = clamp(0.5 + (pMatch - 0.5) * 0.75, 0.05, 0.95)
+  const minus = /-\s*1[.,]5/.test(sel.market)
+  // -1.5 seturi = câștigă 2-0; +1.5 / câștigă un set = ia măcar un set
+  const prob = minus ? pSet * pSet : 1 - (1 - pSet) * (1 - pSet)
+  return clamp(prob + jitter(sel.match, 0.02), 0.03, 0.97)
 }
 
 function serveModel(sel) {
   const lineMatch = sel.market.match(/(\d+[.,]\d+)/)
   const line = lineMatch ? parseFloat(lineMatch[1].replace(',', '.')) : 10.5
-  const key = findKey(SERVE_STATS, sel.match) || findKey(SERVE_STATS, sel.market)
+  const key = findKey(SERVE_STATS, sel.market) || findKey(SERVE_STATS, sel.match)
   const [aces, dfs] = key ? SERVE_STATS[key] : [9.0, 3.2]
   const isUnder = /sub|under/.test(norm(sel.market))
 

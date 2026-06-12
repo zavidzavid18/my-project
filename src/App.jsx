@@ -15,7 +15,9 @@ Hurkacz vs Fritz | Peste 12.5 Asi Hurkacz | 1.85 | tenis
 Alcaraz vs Rune | Câștigător Meci Alcaraz | 1.55 | tenis
 Rybakina vs Ostapenko | Câștigător Meci Rybakina | 1.62 | tenis
 Isner vs Monfils | Sub 3.5 Duble Greșeli Isner | 1.44 | tenis
-Anglia vs SUA | Peste 2.5 Goluri | 2.10`
+Anglia vs SUA | Peste 2.5 Goluri | 2.10
+LA Lakers vs Boston Celtics | Peste 215.5 Puncte | 1.85 | baschet
+NY Yankees vs Boston Red Sox | Câștigător Yankees | 1.72 | baseball`
 
 const fmtPct = (p) => `${(p * 100).toFixed(1)}%`
 const fmtOdd = (o) => o.toFixed(2)
@@ -49,10 +51,17 @@ function VerdictBadge({ verdict }) {
   )
 }
 
+const SPORT_LABELS = {
+  fotbal: '⚽ WC 2026',
+  tenis: '🎾 Tenis',
+  baschet: '🏀 Baschet',
+  baseball: '⚾ Baseball',
+}
+
 function SportTag({ sport }) {
   return (
     <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-slate-400">
-      {sport === 'tenis' ? '🎾 Tenis' : '⚽ WC 2026'}
+      {SPORT_LABELS[sport] ?? sport}
     </span>
   )
 }
@@ -63,8 +72,10 @@ function ImportZone({ rawText, setRawText, onProcess }) {
   return (
     <Card title="Zona de Import" icon="📥">
       <p className="mb-2 text-xs text-slate-400">
-        Format: <code className="rounded bg-slate-800 px-1 text-slate-300">Echipa1 vs Echipa2 | Piață | Cotă | sport</code>
-        {' '}(o selecție pe linie)
+        Acceptă: <code className="rounded bg-slate-800 px-1 text-slate-300">Echipa1 vs Echipa2 | Piață | Cotă | sport</code>,
+        {' '}bilete copiate din <span className="font-semibold text-slate-300">Betano</span> sau liste din{' '}
+        <span className="font-semibold text-slate-300">Superbet</span> (lipește direct, exact cum apar).
+        Sporturi: fotbal, tenis, baschet, baseball.
       </p>
       <textarea
         value={rawText}
