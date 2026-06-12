@@ -13,7 +13,7 @@ import {
   splitMatch,
 } from './engine.js'
 
-const APP_VERSION = 'v3.1'
+const APP_VERSION = 'v4.0'
 const SETTINGS_KEY = 'betting-analyzer-settings'
 
 const loadSettings = () => {
@@ -23,20 +23,6 @@ const loadSettings = () => {
     return {}
   }
 }
-
-// Meciuri reale din programul WC 2026 (faza grupelor) + tenis pe iarbă
-const MOCK_INPUT = `Qatar vs Elveția | Under 2.5 Goluri | 1.72
-Argentina vs Algeria | GG NU | 1.65
-Franța vs Senegal | Under 2.5 Goluri | 1.58
-Brazilia vs Maroc | GG NU | 1.80
-Olanda vs Japonia | Under 2.5 Goluri | 1.92
-Hurkacz vs Fritz | Peste 12.5 Asi Hurkacz | 1.85 | tenis
-Alcaraz vs Rune | Câștigător Meci Alcaraz | 1.55 | tenis
-Rybakina vs Ostapenko | Câștigător Meci Rybakina | 1.62 | tenis
-Medvedev vs Cilic | Marin Cilic +1.5 Seturi Handicap | 1.70 | tenis
-Anglia vs Croatia | Peste 2.5 Goluri | 2.10
-LA Lakers vs Boston Celtics | Peste 215.5 Puncte | 1.85 | baschet
-NY Yankees vs Boston Red Sox | Câștigător Yankees | 1.72 | baseball`
 
 const fmtPct = (p) => `${(p * 100).toFixed(1)}%`
 const fmtOdd = (o) => o.toFixed(2)
@@ -350,123 +336,27 @@ function Suggestions({ suggestions, stake, setStake, onConfirm }) {
 // ─── Setări (chei API, salvate doar în browser) ──────────────────────────────
 
 function SettingsPanel({ settings, onSave }) {
-  const [anthropicKey, setAnthropicKey] = useState(settings.anthropicKey ?? '')
   const [apiFootballKey, setApiFootballKey] = useState(settings.apiFootballKey ?? '')
   const [saved, setSaved] = useState(false)
   return (
-    <details className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
-      <summary className="cursor-pointer text-sm font-semibold text-slate-300">
-        ⚙️ Setări API <span className="ml-2 text-xs font-normal text-slate-500">(cheile rămân doar în browserul tău)</span>
-      </summary>
-      <div className="mt-3 grid gap-3 sm:grid-cols-2">
-        <label className="text-xs text-slate-400">
-          Cheie Claude API (asistent AI) — de la console.anthropic.com
-          <input
-            type="password"
-            value={anthropicKey}
-            onChange={(e) => setAnthropicKey(e.target.value)}
-            placeholder="sk-ant-..."
-            className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 font-mono text-xs text-slate-200 outline-none focus:border-emerald-500"
-          />
-        </label>
-        <label className="text-xs text-slate-400">
-          Cheie API-Football (rezultate fotbal extinse) — de la dashboard.api-football.com
-          <input
-            type="password"
-            value={apiFootballKey}
-            onChange={(e) => setApiFootballKey(e.target.value)}
-            placeholder="opțional"
-            className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 font-mono text-xs text-slate-200 outline-none focus:border-emerald-500"
-          />
-        </label>
-      </div>
+    <Card title="Setări API" icon="⚙️">
+      <p className="mb-3 text-xs text-slate-500">Cheile rămân doar în browserul tău — nu sunt trimise nicăieri altundeva.</p>
+      <label className="block max-w-md text-xs text-slate-400">
+        Cheie API-Football (rezultate fotbal extinse) — gratuit de la dashboard.api-football.com
+        <input
+          type="password"
+          value={apiFootballKey}
+          onChange={(e) => setApiFootballKey(e.target.value)}
+          placeholder="opțional"
+          className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 font-mono text-xs text-slate-200 outline-none focus:border-emerald-500"
+        />
+      </label>
       <button
-        onClick={() => { onSave({ anthropicKey: anthropicKey.trim(), apiFootballKey: apiFootballKey.trim() }); setSaved(true); setTimeout(() => setSaved(false), 2000) }}
+        onClick={() => { onSave({ apiFootballKey: apiFootballKey.trim() }); setSaved(true); setTimeout(() => setSaved(false), 2000) }}
         className="mt-3 rounded-lg bg-slate-700 px-3 py-1.5 text-sm font-semibold text-white transition hover:bg-slate-600 active:scale-95"
       >
         {saved ? '✓ Salvat' : '💾 Salvează setările'}
       </button>
-    </details>
-  )
-}
-
-// ─── Asistent AI (Claude, cu cheia utilizatorului) ───────────────────────────
-
-function AiAssistant({ analyzed, bets, anthropicKey }) {
-  const [question, setQuestion] = useState('')
-  const [answer, setAnswer] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-
-  const ask = async () => {
-    if (!question.trim() || loading) return
-    setLoading(true)
-    setError('')
-    setAnswer('')
-    try {
-      const { default: Anthropic } = await import('@anthropic-ai/sdk')
-      const client = new Anthropic({ apiKey: anthropicKey, dangerouslyAllowBrowser: true })
-      const profit = bets.reduce((a, b) => a + betProfit(b), 0)
-      const context = [
-        'Selecții analizate acum:',
-        ...analyzed.map((s) =>
-          `- ${s.match} | ${s.market} @${s.odds.toFixed(2)} | prob. model ${(s.modelProb * 100).toFixed(1)}% (impl. ${(s.implied * 100).toFixed(1)}%) | ${s.verdict}`),
-        `Istoric: ${bets.length} bilete, profit total ${profit.toFixed(2)} RON.`,
-        ...bets.slice(0, 10).map((b) => `- [${b.status}] ${b.tip} @${b.cotaTotala.toFixed(2)} miză ${b.miza} RON`),
-      ].join('\n')
-      const response = await client.messages.create({
-        model: 'claude-opus-4-8',
-        max_tokens: 2048,
-        thinking: { type: 'adaptive' },
-        system:
-          'Ești un analist quant de pariuri sportive, prieten cu utilizatorul. Răspunzi în română, concis și concret. ' +
-          'Reguli ale utilizatorului: WC 2026 favorizează Under 2.5 și GG NU pe teren neutru (prob. minimă 45%); ' +
-          'tenis pe iarbă folosește Grass Elo pentru câștigător și statistici de serviciu pentru prop-uri; ' +
-          'cotă minimă 1.50 per selecție pentru turneul Betano. ' +
-          'Subliniază riscurile și încurajează pariatul responsabil. Nu garanta niciodată câștiguri.',
-        messages: [{ role: 'user', content: `${context}\n\nÎntrebarea mea: ${question}` }],
-      })
-      setAnswer(response.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n'))
-    } catch (e) {
-      setError(`Eroare: ${e?.message ?? e}. Verifică cheia în Setări API.`)
-    }
-    setLoading(false)
-  }
-
-  return (
-    <Card title="Analist AI" icon="🤖" accent="border-violet-900/60">
-      {!anthropicKey ? (
-        <p className="text-xs text-slate-400">
-          Pune o cheie Claude API în <span className="font-semibold text-slate-300">⚙️ Setări API</span> (de la{' '}
-          <a href="https://console.anthropic.com" target="_blank" rel="noreferrer" className="text-violet-400 underline">console.anthropic.com</a>)
-          și AI-ul îți va analiza biletele, va explica verdictele și va răspunde la întrebări despre strategie.
-        </p>
-      ) : (
-        <>
-          <div className="flex gap-2">
-            <input
-              value={question}
-              onChange={(e) => setQuestion(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && ask()}
-              placeholder="Ex: Care e cel mai riscant picior din Biletul Sigur?"
-              className="flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 outline-none focus:border-violet-500"
-            />
-            <button
-              onClick={ask}
-              disabled={loading || !question.trim()}
-              className="rounded-lg bg-gradient-to-r from-violet-600 to-violet-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-violet-900/40 transition hover:from-violet-500 hover:to-violet-400 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {loading ? '⏳' : '✨ Întreabă'}
-            </button>
-          </div>
-          {error && <p className="mt-2 text-xs text-rose-400">{error}</p>}
-          {answer && (
-            <div className="mt-3 whitespace-pre-wrap rounded-xl border border-violet-900/40 bg-violet-950/20 p-3 text-sm leading-relaxed text-slate-200">
-              {answer}
-            </div>
-          )}
-        </>
-      )}
     </Card>
   )
 }
@@ -684,12 +574,12 @@ function BetCard({ bet, onStatusChange, onDelete }) {
   )
 }
 
-function History({ bets, onStatusChange, onDelete, onValidate, onVerifyOnline, verifying, verifyMsg }) {
+function History({ bets, onStatusChange, onDelete, onValidate, onVerifyOnline, verifying, verifyMsg, title = 'Bilete Active', emptyMsg = 'Niciun bilet activ. Confirmă o sugestie sau importă un bilet din tabul Analiză.' }) {
   const [resultsText, setResultsText] = useState('')
   const pendingCount = bets.filter((b) => b.status === 'În așteptare').length
 
   return (
-    <Card title="Istoric Pariuri" icon="📒">
+    <Card title={title} icon="📒">
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <button
           onClick={onVerifyOnline}
@@ -727,7 +617,7 @@ function History({ bets, onStatusChange, onDelete, onValidate, onVerifyOnline, v
         </div>
       </details>
       {bets.length === 0 ? (
-        <p className="text-sm text-slate-500">Niciun bilet confirmat încă. Confirmă o sugestie pentru a o urmări aici.</p>
+        <p className="text-sm text-slate-500">{emptyMsg}</p>
       ) : (
         <div className="space-y-3">
           {bets.map((b) => (
@@ -744,8 +634,9 @@ function History({ bets, onStatusChange, onDelete, onValidate, onVerifyOnline, v
 const STORAGE_KEY = 'betting-analyzer-history'
 
 export default function App() {
-  const [rawText, setRawText] = useState(MOCK_INPUT)
-  const [analyzed, setAnalyzed] = useState(() => parseRawText(MOCK_INPUT).map(analyzeSelection))
+  const [rawText, setRawText] = useState('')
+  const [analyzed, setAnalyzed] = useState([])
+  const [tab, setTab] = useState('analiza')
   const [ticketMeta, setTicketMeta] = useState(null)
   const [stake, setStake] = useState(100)
   const [verifying, setVerifying] = useState(false)
@@ -868,10 +759,20 @@ export default function App() {
 
   const handleDelete = (id) => setBets((prev) => prev.filter((b) => b.id !== id))
 
+  const activeBets = bets.filter((b) => b.status === 'În așteptare')
+  const settledBets = bets.filter((b) => b.status !== 'În așteptare')
+
+  const TABS = [
+    { id: 'analiza', label: '🧠 Analiză' },
+    { id: 'active', label: '⏳ Bilete Active', count: activeBets.length },
+    { id: 'istoric', label: '📊 Istoric & Statistici' },
+    { id: 'setari', label: '⚙️ Setări' },
+  ]
+
   return (
     <div className="min-h-screen bg-slate-950 bg-[radial-gradient(ellipse_at_top,rgba(16,185,129,0.08),transparent_60%)] px-4 py-6 text-slate-200">
       <div className="mx-auto max-w-7xl">
-        <header className="mb-6">
+        <header className="mb-4">
           <h1 className="text-2xl font-bold tracking-tight text-white">
             ⚽🎾 Analizor & Tracker Pariuri
           </h1>
@@ -881,36 +782,55 @@ export default function App() {
           </p>
         </header>
 
-        <div className="grid gap-5 lg:grid-cols-5">
-          <div className="space-y-5 lg:col-span-3">
-            <ImportZone
-              rawText={rawText}
-              setRawText={setRawText}
-              onProcess={handleProcess}
-              onLoadReal={handleLoadReal}
-              loadingReal={loadingReal}
-              importMsg={importMsg}
-            />
-            <TicketBanner meta={ticketMeta} analyzed={analyzed} onImport={handleImportTicket} />
-            <AnalysisEngine analyzed={analyzed} />
-          </div>
-          <div className="lg:col-span-2">
-            <Suggestions
-              suggestions={suggestions}
-              stake={stake}
-              setStake={setStake}
-              onConfirm={handleConfirm}
-            />
-          </div>
-        </div>
+        <nav className="mb-5 flex gap-1.5 overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/70 p-1.5">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={`flex-1 whitespace-nowrap rounded-xl px-4 py-2.5 text-sm font-semibold transition active:scale-[0.98] ${
+                tab === t.id
+                  ? 'bg-gradient-to-r from-emerald-600 to-emerald-500 text-white shadow-lg shadow-emerald-900/40'
+                  : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
+              }`}
+            >
+              {t.label}
+              {t.count > 0 && (
+                <span className={`ml-2 rounded-full px-2 py-0.5 font-mono text-xs ${tab === t.id ? 'bg-white/20' : 'bg-amber-500/20 text-amber-400'}`}>
+                  {t.count}
+                </span>
+              )}
+            </button>
+          ))}
+        </nav>
 
-        <div className="mt-5 space-y-5">
-          <SettingsPanel settings={settings} onSave={handleSaveSettings} />
-          <AiAssistant analyzed={analyzed} bets={bets} anthropicKey={settings.anthropicKey} />
-          <StatsBar bets={bets} />
-          <CalendarView bets={bets} />
+        {tab === 'analiza' && (
+          <div className="grid gap-5 lg:grid-cols-5">
+            <div className="space-y-5 lg:col-span-3">
+              <ImportZone
+                rawText={rawText}
+                setRawText={setRawText}
+                onProcess={handleProcess}
+                onLoadReal={handleLoadReal}
+                loadingReal={loadingReal}
+                importMsg={importMsg}
+              />
+              <TicketBanner meta={ticketMeta} analyzed={analyzed} onImport={handleImportTicket} />
+              <AnalysisEngine analyzed={analyzed} />
+            </div>
+            <div className="lg:col-span-2">
+              <Suggestions
+                suggestions={suggestions}
+                stake={stake}
+                setStake={setStake}
+                onConfirm={handleConfirm}
+              />
+            </div>
+          </div>
+        )}
+
+        {tab === 'active' && (
           <History
-            bets={bets}
+            bets={activeBets}
             onStatusChange={handleStatusChange}
             onDelete={handleDelete}
             onValidate={handleValidate}
@@ -918,7 +838,27 @@ export default function App() {
             verifying={verifying}
             verifyMsg={verifyMsg}
           />
-        </div>
+        )}
+
+        {tab === 'istoric' && (
+          <div className="space-y-5">
+            <StatsBar bets={bets} />
+            <CalendarView bets={bets} />
+            <Card title="Bilete Decise" icon="📒">
+              {settledBets.length === 0 ? (
+                <p className="text-sm text-slate-500">Niciun bilet decis încă. Biletele câștigate sau pierdute apar aici.</p>
+              ) : (
+                <div className="space-y-3">
+                  {settledBets.map((b) => (
+                    <BetCard key={b.id} bet={b} onStatusChange={handleStatusChange} onDelete={handleDelete} />
+                  ))}
+                </div>
+              )}
+            </Card>
+          </div>
+        )}
+
+        {tab === 'setari' && <SettingsPanel settings={settings} onSave={handleSaveSettings} />}
 
         <footer className="mt-6 text-center text-xs text-slate-600">
           Model intern — pariază responsabil. Probabilitățile sunt estimări, nu garanții.
