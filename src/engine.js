@@ -566,13 +566,16 @@ const RO_EN_TEAMS = {
 export const splitMatch = (match) =>
   match.split(/\s+(?:vs|v)\s+|\s+-\s+/i).map((t) => t.trim()).filter(Boolean)
 
+// Returnează { score, finished } — finished=false înseamnă meci în desfășurare
+// (scor live, biletul NU se decide încă).
 export async function fetchScoreOnline(sel, { apiFootballKey } = {}) {
   // API-Football (cheie proprie) are acoperire mai bună — încercat primul
   if (apiFootballKey && sel.sport === 'fotbal') {
-    const score = await fetchScoreApiFootball(sel, apiFootballKey).catch(() => null)
-    if (score) return score
+    const r = await fetchScoreApiFootball(sel, apiFootballKey).catch(() => null)
+    if (r) return r
   }
-  return fetchScoreSportsDb(sel)
+  const score = await fetchScoreSportsDb(sel)
+  return score ? { score, finished: true } : null
 }
 
 async function fetchScoreSportsDb(sel) {
@@ -612,22 +615,40 @@ async function fetchScoreApiFootball(sel, key) {
   const teamId = (await tResp.json())?.response?.[0]?.team?.id
   if (!teamId) return null
 
+  const oppWord = norm(en[1]).split(' ')[0]
+  const vsOpponent = (f) =>
+    norm(f?.teams?.home?.name ?? '').includes(oppWord) ||
+    norm(f?.teams?.away?.name ?? '').includes(oppWord)
+  const orient = (fx) => {
+    const homeIsFirst = norm(fx.teams.home.name).includes(norm(en[0]).split(' ')[0])
+    return homeIsFirst ? [fx.goals.home, fx.goals.away] : [fx.goals.away, fx.goals.home]
+  }
+
   const fResp = await fetch(
     `https://v3.football.api-sports.io/fixtures?team=${teamId}&last=15`,
     { headers },
   )
   if (!fResp.ok) return null
   const fixtures = (await fResp.json())?.response ?? []
-  const oppWord = norm(en[1]).split(' ')[0]
-  const fx = fixtures.find(
-    (f) =>
-      ['FT', 'AET', 'PEN'].includes(f?.fixture?.status?.short) &&
-      (norm(f?.teams?.home?.name ?? '').includes(oppWord) ||
-        norm(f?.teams?.away?.name ?? '').includes(oppWord)),
+  const done = fixtures.find(
+    (f) => ['FT', 'AET', 'PEN'].includes(f?.fixture?.status?.short) && vsOpponent(f),
   )
-  if (!fx || fx.goals?.home == null || fx.goals?.away == null) return null
-  const homeIsFirst = norm(fx.teams.home.name).includes(norm(en[0]).split(' ')[0])
-  return homeIsFirst ? [fx.goals.home, fx.goals.away] : [fx.goals.away, fx.goals.home]
+  if (done && done.goals?.home != null && done.goals?.away != null) {
+    return { score: orient(done), finished: true }
+  }
+
+  // meci în desfășurare? scor live, fără decizie
+  const lResp = await fetch(
+    `https://v3.football.api-sports.io/fixtures?team=${teamId}&live=all`,
+    { headers },
+  ).catch(() => null)
+  if (lResp?.ok) {
+    const liveFx = ((await lResp.json())?.response ?? []).find(vsOpponent)
+    if (liveFx && liveFx.goals?.home != null) {
+      return { score: orient(liveFx), finished: false }
+    }
+  }
+  return null
 }
 
 // ─── Meciuri reale (program oficial, TheSportsDB) ───────────────────────────

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   COTA_MINIMA,
   analyzeSelection,
@@ -13,7 +13,7 @@ import {
   splitMatch,
 } from './engine.js'
 
-const APP_VERSION = 'v4.1'
+const APP_VERSION = 'v4.2'
 const SETTINGS_KEY = 'betting-analyzer-settings'
 
 const loadSettings = () => {
@@ -583,6 +583,11 @@ function BetCard({ bet, onStatusChange, onDelete }) {
               <span>
                 {s.match} — <span className="text-slate-500">{s.market}</span>
                 {s.score && <span className="ml-1 font-mono text-slate-400">({s.score[0]}-{s.score[1]})</span>}
+                {!s.score && s.liveScore && (
+                  <span className="ml-1 animate-pulse font-mono text-xs font-bold text-rose-400">
+                    🔴 LIVE {s.liveScore[0]}-{s.liveScore[1]}
+                  </span>
+                )}
               </span>
             </li>
           )
@@ -606,9 +611,18 @@ function BetCard({ bet, onStatusChange, onDelete }) {
   )
 }
 
+const SORTS = {
+  recente: { label: 'Recente', fn: (a, b) => (b.ts ?? 0) - (a.ts ?? 0) },
+  miza: { label: 'Miză ↓', fn: (a, b) => b.miza - a.miza },
+  cota: { label: 'Cotă ↓', fn: (a, b) => b.cotaTotala - a.cotaTotala },
+  castig: { label: 'Câștig potențial ↓', fn: (a, b) => b.miza * b.cotaTotala - a.miza * a.cotaTotala },
+}
+
 function History({ bets, onStatusChange, onDelete, onValidate, onVerifyOnline, verifying, verifyMsg, title = 'Bilete Active', emptyMsg = 'Niciun bilet activ. Confirmă o sugestie sau importă un bilet din tabul Analiză.' }) {
   const [resultsText, setResultsText] = useState('')
+  const [sortBy, setSortBy] = useState('recente')
   const pendingCount = bets.filter((b) => b.status === 'În așteptare').length
+  const sorted = [...bets].sort(SORTS[sortBy].fn)
 
   return (
     <Card title={title} icon="📒">
@@ -624,6 +638,22 @@ function History({ bets, onStatusChange, onDelete, onValidate, onVerifyOnline, v
           {verifyMsg || `${pendingCount} bilete în așteptare — caută automat scorurile finale pe TheSportsDB.`}
         </span>
       </div>
+      {bets.length > 1 && (
+        <div className="mb-3 flex flex-wrap items-center gap-1.5 text-xs">
+          <span className="mr-1 text-slate-500">Sortează:</span>
+          {Object.entries(SORTS).map(([id, s]) => (
+            <button
+              key={id}
+              onClick={() => setSortBy(id)}
+              className={`rounded-lg px-2.5 py-1 font-semibold transition ${
+                sortBy === id ? 'bg-emerald-600 text-white' : 'border border-slate-700 text-slate-400 hover:bg-slate-800'
+              }`}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+      )}
       <details className="mb-4 rounded-xl border border-slate-800 bg-slate-950/60 p-3">
         <summary className="cursor-pointer text-xs font-semibold text-slate-300">
           ✍️ Validare manuală (dacă un meci nu e găsit online)
@@ -652,7 +682,7 @@ function History({ bets, onStatusChange, onDelete, onValidate, onVerifyOnline, v
         <p className="text-sm text-slate-500">{emptyMsg}</p>
       ) : (
         <div className="space-y-3">
-          {bets.map((b) => (
+          {sorted.map((b) => (
             <BetCard key={b.id} bet={b} onStatusChange={onStatusChange} onDelete={onDelete} />
           ))}
         </div>
@@ -742,9 +772,13 @@ export default function App() {
     setBets((prev) => prev.map((b) => applyResultsToBet(b, results)))
   }
 
+  const lastVerifyRef = useRef(0)
+
   const handleVerifyOnline = async () => {
+    if (verifying) return
     setVerifying(true)
     setVerifyMsg('')
+    lastVerifyRef.current = Date.now()
     try {
       const pendingSels = []
       for (const b of bets) {
@@ -754,24 +788,54 @@ export default function App() {
         }
       }
       const results = []
+      const liveScores = new Map()
+      let notFound = 0
       for (const s of pendingSels) {
-        const score = await fetchScoreOnline(s, { apiFootballKey: settings.apiFootballKey }).catch(() => null)
-        if (score) {
+        const r = await fetchScoreOnline(s, { apiFootballKey: settings.apiFootballKey }).catch(() => null)
+        if (!r) { notFound += 1; continue }
+        if (r.finished) {
           const teams = splitMatch(s.match)
-          results.push({ t1: teams[0], t2: teams[1], s1: score[0], s2: score[1] })
+          results.push({ t1: teams[0], t2: teams[1], s1: r.score[0], s2: r.score[1] })
+        } else {
+          liveScores.set(s.match, r.score)
         }
       }
-      if (results.length) setBets((prev) => prev.map((b) => applyResultsToBet(b, results)))
-      setVerifyMsg(
-        results.length
-          ? `✅ Găsite ${results.length}/${pendingSels.length} rezultate finale — biletele au fost validate.`
-          : `Niciun rezultat final găsit încă (${pendingSels.length} meciuri căutate). Meciurile pot fi în desfășurare — încearcă mai târziu sau validează manual.`,
+      setBets((prev) =>
+        prev.map((b) => {
+          const withLive = {
+            ...b,
+            selections: b.selections.map((s) => {
+              const live = liveScores.get(s.match)
+              return live ? { ...s, liveScore: live } : s.liveScore && !liveScores.has(s.match) ? { ...s, liveScore: undefined } : s
+            }),
+          }
+          return applyResultsToBet(withLive, results)
+        }),
       )
+      const parts = []
+      if (results.length) parts.push(`✅ ${results.length} finale`)
+      if (liveScores.size) parts.push(`🔴 ${liveScores.size} LIVE`)
+      if (notFound) parts.push(`⏳ ${notFound} negăsite (probabil nu au început)`)
+      setVerifyMsg(parts.length ? `${parts.join(' · ')} — verificat la ${new Date().toLocaleTimeString('ro-RO', { hour: '2-digit', minute: '2-digit' })}.` : 'Niciun meci în așteptare de verificat.')
     } catch (e) {
       setVerifyMsg(`⚠️ Eroare la căutarea online: ${e.message}. Folosește validarea manuală.`)
     }
     setVerifying(false)
   }
+
+  // auto-verificare: la deschiderea tabului Bilete Active și apoi la fiecare
+  // 3 minute cât timp tabul rămâne deschis
+  const verifyFnRef = useRef(null)
+  verifyFnRef.current = () => {
+    if (bets.some((b) => b.status === 'În așteptare')) handleVerifyOnline()
+  }
+  useEffect(() => {
+    if (tab !== 'active') return
+    if (Date.now() - lastVerifyRef.current > 3 * 60 * 1000) verifyFnRef.current()
+    const intervalId = setInterval(() => verifyFnRef.current(), 3 * 60 * 1000)
+    return () => clearInterval(intervalId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab])
 
   const handleConfirm = (tip, parlay) => {
     setBets((prev) => [
@@ -817,7 +881,7 @@ export default function App() {
           </p>
         </header>
 
-        <nav className="mb-5 flex gap-1.5 overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/70 p-1.5">
+        <nav className="sticky top-2 z-20 mb-5 flex gap-1.5 overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/90 p-1.5 backdrop-blur">
           {TABS.map((t) => (
             <button
               key={t.id}
