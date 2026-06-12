@@ -115,7 +115,11 @@ export function parseRawText(raw) {
         j += 1
       }
       const parsed = parseSuperbetBlock(block, line)
-      if (parsed) selections.push(classify(parsed))
+      if (parsed) {
+        const entry = classify(parsed)
+        if (parsed.score) entry.score = parsed.score
+        selections.push(entry)
+      }
       i = j
       continue
     }
@@ -187,10 +191,14 @@ function parseSuperbetBlock(block, header) {
   const odds = num(body[oddsIdx])
   const market = body[oddsIdx - 1]
   const pick = body[oddsIdx - 2]
-  const teams = body
-    .slice(0, oddsIdx - 2)
-    .filter((l) => !/^adaug[ăa]$/i.test(l) && !isDateLine(l) && !/^\d+$/.test(l) && !isOddLine(l))
+  const beforePick = body.slice(0, oddsIdx - 2)
+  const teams = beforePick.filter(
+    (l) => !/^adaug[ăa]$/i.test(l) && !isDateLine(l) && !/^\d+$/.test(l) && !isOddLine(l),
+  )
   if (teams.length < 2) return null
+  // meci încheiat: două linii cu numere întregi după echipe = scorul final
+  const ints = beforePick.filter((l) => /^\d+$/.test(l)).map(Number)
+  const score = ints.length === 2 ? ints : undefined
 
   const ctx = `${header} ${competition}`
   let sportHint = 'fotbal'
@@ -203,6 +211,7 @@ function parseSuperbetBlock(block, header) {
     market: `${market}: ${pick}`,
     odds,
     sportHint,
+    score,
   }
 }
 
@@ -262,7 +271,13 @@ export function detectTicketMeta(raw) {
   const lines = raw.split('\n').map((l) => l.trim()).filter(Boolean)
   let status = null
   let stake = null
-  for (const l of lines) {
+  let totalOdds = null
+  const nextNumber = (i) => {
+    const m = lines[i + 1]?.match(/^(\d+(?:[.,]\d{1,2})?)$/)
+    return m ? num(m[1]) : null
+  }
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i]
     if (status === null) {
       if (/^pierdut$/i.test(l)) status = 'Pierdut'
       else if (/^c[âa][șs]tigat$/i.test(l)) status = 'Câștigat'
@@ -270,10 +285,13 @@ export function detectTicketMeta(raw) {
     if (stake === null) {
       const m = l.match(/^(\d+(?:[.,]\d{1,2})?)\s*(lei|ron)$/i)
       if (m && num(m[1]) > 0) stake = num(m[1])
+      // Superbet: "Bani reali" / "50.00" / "RON" pe linii separate
+      else if (/^bani reali$|^miz[ăa]$/i.test(l)) stake = nextNumber(i)
     }
+    if (totalOdds === null && /^cot[ăa] total[ăa]$/i.test(l)) totalOdds = nextNumber(i)
   }
-  if (status === null && stake === null) return null
-  return { status: status ?? 'În așteptare', stake }
+  if (status === null && stake === null && totalOdds === null) return null
+  return { status: status ?? 'În așteptare', stake, totalOdds }
 }
 
 // ─── Analiză per selecție ───────────────────────────────────────────────────

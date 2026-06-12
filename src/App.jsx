@@ -13,7 +13,7 @@ import {
   splitMatch,
 } from './engine.js'
 
-const APP_VERSION = 'v4.0'
+const APP_VERSION = 'v4.1'
 const SETTINGS_KEY = 'betting-analyzer-settings'
 
 const loadSettings = () => {
@@ -114,25 +114,57 @@ function ImportZone({ rawText, setRawText, onProcess, onLoadReal, loadingReal, i
 // ─── Bilet finalizat detectat în paste ───────────────────────────────────────
 
 function TicketBanner({ meta, analyzed, onImport }) {
-  if (!meta || analyzed.length === 0) return null
-  const cotaTotala = analyzed.reduce((a, s) => a * s.odds, 1)
+  const [miza, setMiza] = useState(meta?.stake ?? 50)
+  const [status, setStatus] = useState(meta?.status ?? 'În așteptare')
+  useEffect(() => {
+    setMiza(meta?.stake ?? 50)
+    setStatus(meta?.status ?? 'În așteptare')
+  }, [meta])
+
+  if (analyzed.length === 0) return null
+  // lista mare de cote din ofertă nu e un bilet — bannerul apare doar la
+  // bilete reale (meta detectat) sau la selecții puține
+  if (!meta && analyzed.length > 20) return null
+
+  const cotaTotala = meta?.totalOdds ?? analyzed.reduce((a, s) => a * s.odds, 1)
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4">
-      <div className="text-sm text-slate-300">
-        🎫 <span className="font-semibold">Bilet detectat:</span> {analyzed.length} selecții
-        {' '}· cotă totală <span className="font-mono text-slate-100">{cotaTotala.toFixed(2)}</span>
-        {meta.stake != null && <> · miză <span className="font-mono text-slate-100">{meta.stake.toFixed(2)} RON</span></>}
-        {' '}· status{' '}
-        <span className={`font-semibold ${meta.status === 'Câștigat' ? 'text-emerald-400' : meta.status === 'Pierdut' ? 'text-rose-400' : 'text-amber-400'}`}>
-          {meta.status}
-        </span>
+    <div className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4">
+      <div className="mb-3 text-sm text-slate-300">
+        🎫 <span className="font-semibold">Bilet pregătit:</span> {analyzed.length} selecții
+        {' '}· cotă totală <span className="font-mono font-bold text-slate-100">@{cotaTotala.toFixed(2)}</span>
+        {' '}· câștig potențial{' '}
+        <span className="font-mono font-bold text-amber-400">{(miza * cotaTotala).toFixed(2)} RON</span>
       </div>
-      <button
-        onClick={onImport}
-        className="rounded-lg bg-amber-600/90 px-3 py-1.5 text-sm font-semibold text-white transition hover:bg-amber-500 active:scale-95"
-      >
-        💾 Salvează în Istoric
-      </button>
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="text-xs text-slate-400">
+          Miză (RON)
+          <input
+            type="number"
+            min="1"
+            value={miza}
+            onChange={(e) => setMiza(Math.max(1, Number(e.target.value) || 1))}
+            className="mt-1 block w-24 rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 font-mono text-sm text-slate-200 outline-none focus:border-amber-500"
+          />
+        </label>
+        <label className="text-xs text-slate-400">
+          Status
+          <select
+            value={status}
+            onChange={(e) => setStatus(e.target.value)}
+            className={`mt-1 block rounded-lg border bg-slate-950 px-2 py-1.5 text-sm font-semibold outline-none ${STATUS_STYLES[status]}`}
+          >
+            <option>În așteptare</option>
+            <option>Câștigat</option>
+            <option>Pierdut</option>
+          </select>
+        </label>
+        <button
+          onClick={() => onImport(miza, status, cotaTotala)}
+          className="rounded-lg bg-amber-600/90 px-4 py-2 text-sm font-semibold text-white transition hover:bg-amber-500 active:scale-95"
+        >
+          💾 Salvează biletul
+        </button>
+      </div>
     </div>
   )
 }
@@ -637,6 +669,7 @@ export default function App() {
   const [rawText, setRawText] = useState('')
   const [analyzed, setAnalyzed] = useState([])
   const [tab, setTab] = useState('analiza')
+  const [bannerDismissed, setBannerDismissed] = useState(false)
   const [ticketMeta, setTicketMeta] = useState(null)
   const [stake, setStake] = useState(100)
   const [verifying, setVerifying] = useState(false)
@@ -666,6 +699,7 @@ export default function App() {
   const handleProcess = () => {
     setAnalyzed(parseRawText(rawText).map(analyzeSelection))
     setTicketMeta(detectTicketMeta(rawText))
+    setBannerDismissed(false)
   }
 
   const handleLoadReal = async () => {
@@ -684,21 +718,22 @@ export default function App() {
     setLoadingReal(false)
   }
 
-  const handleImportTicket = () => {
-    if (!ticketMeta || analyzed.length === 0) return
+  const handleImportTicket = (miza, status, cotaTotala) => {
+    if (analyzed.length === 0) return
     const bet = {
       id: Date.now() + Math.random(),
       ts: Date.now(),
       data: new Date().toLocaleString('ro-RO', { dateStyle: 'short', timeStyle: 'short' }),
       tip: `Bilet importat (${analyzed.length} sel.)`,
       selections: analyzed,
-      cotaTotala: analyzed.reduce((a, s) => a * s.odds, 1),
-      miza: ticketMeta.stake ?? stake,
-      status: ticketMeta.status,
+      cotaTotala,
+      miza,
+      status,
     }
     // scorurile deja prezente în paste pot decide biletul pe loc
     setBets((prev) => [applyResultsToBet(bet, []), ...prev])
-    setTicketMeta(null)
+    setBannerDismissed(true)
+    setTab('active')
   }
 
   const handleValidate = (text) => {
@@ -814,7 +849,7 @@ export default function App() {
                 loadingReal={loadingReal}
                 importMsg={importMsg}
               />
-              <TicketBanner meta={ticketMeta} analyzed={analyzed} onImport={handleImportTicket} />
+              {!bannerDismissed && <TicketBanner meta={ticketMeta} analyzed={analyzed} onImport={handleImportTicket} />}
               <AnalysisEngine analyzed={analyzed} />
             </div>
             <div className="lg:col-span-2">
