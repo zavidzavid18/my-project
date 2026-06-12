@@ -2,12 +2,15 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   COTA_MINIMA,
   analyzeSelection,
+  applyResultsToBet,
   buildSuggestions,
   detectTicketMeta,
   parseRawText,
+  parseResults,
+  settleSelection,
 } from './engine.js'
 
-const APP_VERSION = 'v1.3'
+const APP_VERSION = 'v1.4'
 
 const MOCK_INPUT = `Mexic vs Africa de Sud | Under 2.5 Goluri | 1.72
 Argentina vs Nigeria | GG NU | 1.65
@@ -303,7 +306,8 @@ function Suggestions({ suggestions, stake, setStake, onConfirm }) {
 
 // ─── Istoric Pariuri ─────────────────────────────────────────────────────────
 
-function History({ bets, onStatusChange, onDelete }) {
+function History({ bets, onStatusChange, onDelete, onValidate }) {
+  const [resultsText, setResultsText] = useState('')
   const profit = bets.reduce((acc, b) => {
     if (b.status === 'Câștigat') return acc + b.miza * (b.cotaTotala - 1)
     if (b.status === 'Pierdut') return acc - b.miza
@@ -320,6 +324,29 @@ function History({ bets, onStatusChange, onDelete }) {
             {profit >= 0 ? '+' : ''}{profit.toFixed(2)} RON
           </span>
         </span>
+      </div>
+      <div className="mb-4 rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+        <p className="mb-2 text-xs text-slate-400">
+          🔄 <span className="font-semibold text-slate-300">Validare automată:</span> lipește rezultatele finale
+          (ex: <code className="rounded bg-slate-800 px-1">Coreea de Sud - Cehia 2-1</code>, câte unul pe linie)
+          și biletele în așteptare se marchează singure Câștigat / Pierdut.
+        </p>
+        <div className="flex gap-2">
+          <textarea
+            value={resultsText}
+            onChange={(e) => setResultsText(e.target.value)}
+            rows={2}
+            spellCheck={false}
+            placeholder="Echipa1 - Echipa2 2-1"
+            className="flex-1 resize-y rounded-lg border border-slate-700 bg-slate-950 p-2 font-mono text-xs text-slate-200 outline-none focus:border-emerald-500"
+          />
+          <button
+            onClick={() => { onValidate(resultsText); setResultsText('') }}
+            className="self-end rounded-lg bg-emerald-700 px-3 py-2 text-sm font-semibold text-white transition hover:bg-emerald-600 active:scale-95"
+          >
+            🔄 Validează
+          </button>
+        </div>
       </div>
       {bets.length === 0 ? (
         <p className="text-sm text-slate-500">Niciun bilet confirmat încă. Confirmă o sugestie pentru a o urmări aici.</p>
@@ -343,9 +370,16 @@ function History({ bets, onStatusChange, onDelete }) {
                   <td className="py-2.5 pr-3 text-xs text-slate-400">{b.data}</td>
                   <td className="py-2.5 pr-3 text-slate-200">{b.tip}</td>
                   <td className="py-2.5 pr-3 text-xs text-slate-300">
-                    {b.selections.map((s) => (
-                      <div key={s.id}>{s.match} — <span className="text-slate-500">{s.market}</span></div>
-                    ))}
+                    {b.selections.map((s) => {
+                      const outcome = settleSelection(s)
+                      return (
+                        <div key={s.id}>
+                          {outcome === 'Câștigat' ? '✅ ' : outcome === 'Pierdut' ? '❌ ' : ''}
+                          {s.match} — <span className="text-slate-500">{s.market}</span>
+                          {s.score && <span className="ml-1 font-mono text-slate-400">({s.score[0]}-{s.score[1]})</span>}
+                        </div>
+                      )
+                    })}
                   </td>
                   <td className="py-2.5 pr-3 font-mono font-semibold text-slate-200">{fmtOdd(b.cotaTotala)}</td>
                   <td className="py-2.5 pr-3 font-mono text-slate-300">{b.miza} RON</td>
@@ -409,19 +443,24 @@ export default function App() {
 
   const handleImportTicket = () => {
     if (!ticketMeta || analyzed.length === 0) return
-    setBets((prev) => [
-      {
-        id: Date.now() + Math.random(),
-        data: new Date().toLocaleString('ro-RO', { dateStyle: 'short', timeStyle: 'short' }),
-        tip: `Bilet importat (${analyzed.length} sel.)`,
-        selections: analyzed,
-        cotaTotala: analyzed.reduce((a, s) => a * s.odds, 1),
-        miza: ticketMeta.stake ?? stake,
-        status: ticketMeta.status,
-      },
-      ...prev,
-    ])
+    const bet = {
+      id: Date.now() + Math.random(),
+      data: new Date().toLocaleString('ro-RO', { dateStyle: 'short', timeStyle: 'short' }),
+      tip: `Bilet importat (${analyzed.length} sel.)`,
+      selections: analyzed,
+      cotaTotala: analyzed.reduce((a, s) => a * s.odds, 1),
+      miza: ticketMeta.stake ?? stake,
+      status: ticketMeta.status,
+    }
+    // scorurile deja prezente în paste pot decide biletul pe loc
+    setBets((prev) => [applyResultsToBet(bet, []), ...prev])
     setTicketMeta(null)
+  }
+
+  const handleValidate = (text) => {
+    const results = parseResults(text)
+    if (results.length === 0) return
+    setBets((prev) => prev.map((b) => applyResultsToBet(b, results)))
   }
 
   const handleConfirm = (tip, parlay) => {
@@ -474,7 +513,7 @@ export default function App() {
         </div>
 
         <div className="mt-5">
-          <History bets={bets} onStatusChange={handleStatusChange} onDelete={handleDelete} />
+          <History bets={bets} onStatusChange={handleStatusChange} onDelete={handleDelete} onValidate={handleValidate} />
         </div>
 
         <footer className="mt-6 text-center text-xs text-slate-600">

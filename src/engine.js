@@ -75,17 +75,27 @@ const isFooterLine = (l) =>
 export function parseRawText(raw) {
   const lines = raw.split('\n').map((l) => l.trim()).filter(Boolean)
   const selections = []
+  // Biletele Betano au marcaje "sport-icon"; restul liniilor sunt decor
+  // (antet cu rezumatul selecțiilor, totaluri), deci fallback-ul se oprește.
+  const hasBetano = lines.some((l) => /^sport-icon$/i.test(l))
   let i = 0
 
   while (i < lines.length) {
     const line = lines[i]
 
-    // Format Betano: sport-icon / selecție / cotă / piață / meci
+    // Format Betano: sport-icon / selecție / cotă / piață / meci [/ scor]
     if (/^sport-icon$/i.test(line)) {
       const [sel, odds, market, match] = lines.slice(i + 1, i + 5)
       if (sel && odds && isOddLine(odds) && market && match && /[a-zăâîșț]/i.test(match)) {
-        selections.push(classify({ match, market: `${market}: ${sel}`, odds: num(odds) }))
-        i += 5
+        const entry = classify({ match, market: `${market}: ${sel}`, odds: num(odds) })
+        let consumed = 5
+        const scoreLine = lines[i + 5]?.match(/^scor:?\s*(\d+)\s*-\s*(\d+)/i)
+        if (scoreLine) {
+          entry.score = [Number(scoreLine[1]), Number(scoreLine[2])]
+          consumed = 6
+        }
+        selections.push(entry)
+        i += consumed
         continue
       }
       i += 1
@@ -123,8 +133,8 @@ export function parseRawText(raw) {
       continue
     }
 
-    // Fallback: "text ... cotă" pe o singură linie
-    if (!isDateLine(line) && !isFooterLine(line)) {
+    // Fallback: "text ... cotă" pe o singură linie (doar în afara biletelor Betano)
+    if (!hasBetano && !isDateLine(line) && !isFooterLine(line)) {
       const m = line.match(/(\d+[.,]\d+)\s*$/)
       if (m) {
         const match = line.slice(0, m.index).trim()
@@ -342,6 +352,133 @@ function serveModel(sel) {
   }
   const underProb = logistic((line - dfs) / 1.2)
   return clamp(isUnder ? underProb : 1 - underProb, 0.05, 0.95)
+}
+
+// ─── Validare selecții pe baza scorului final ───────────────────────────────
+// Returnează 'Câștigat' / 'Pierdut' sau null dacă piața nu poate fi decisă
+// automat din scor (ex: game-uri/asi la tenis când scorul e pe seturi).
+
+export function settleSelection(sel) {
+  if (!sel.score) return null
+  const [a, b] = sel.score
+  const m = norm(sel.market)
+  const pick = (m.split(':').pop() || '').trim()
+  const sides = sel.match.split(/\s+(?:vs|v)\s+|\s+-\s+/i).map((p) => norm(p.trim()))
+  const [p1 = '', p2 = ''] = sides
+  const sideOf = (text) => {
+    if (p2 && text.includes(p2)) return 1
+    if (p1 && text.includes(p1)) return 0
+    if (p2 && p2.split(' ').some((w) => w.length > 3 && text.includes(w))) return 1
+    if (p1 && p1.split(' ').some((w) => w.length > 3 && text.includes(w))) return 0
+    return -1
+  }
+  const res = (ok) => (ok ? 'Câștigat' : 'Pierdut')
+
+  if (sel.sport === 'tenis') {
+    const side = sideOf(m)
+    if (side === -1) return null
+    const me = sel.score[side]
+    const opp = sel.score[1 - side]
+    // "Câștigător set (Set N)" nu se poate decide din scorul final pe seturi
+    if (sel.marketType === 'winner') {
+      if (/castigator set|set \d/.test(m)) return null
+      return res(me > opp)
+    }
+    if (sel.marketType === 'castiga_set') {
+      const yes = me >= 1
+      return res(/\bnu$/.test(pick) ? !yes : yes)
+    }
+    if (sel.marketType === 'handicap_set') {
+      const h = /-\s*1[.,]5/.test(m) ? -1.5 : 1.5
+      return res(me + h > opp)
+    }
+    return null
+  }
+
+  if (sel.sport !== 'fotbal') return null
+  const total = a + b
+
+  // Combo "1X2 & Total goluri": ambele condiții trebuie să fie adevărate
+  if (/1x2\s*&\s*total/.test(m)) {
+    const token = pick.split('&')[0].trim()
+    const winPart = token === '1' ? a > b : token === '2' ? b > a : a === b
+    const ou = m.match(/(peste|over|sub|under)\s*(\d+[.,]5)/)
+    if (!ou) return null
+    const line = num(ou[2])
+    const totalPart = ou[1] === 'sub' || ou[1] === 'under' ? total < line : total > line
+    return res(winPart && totalPart)
+  }
+  if (/ambele(?:\s+\S+)* inscriu sau peste 2[.,]5/.test(m)) {
+    const yes = (a > 0 && b > 0) || total > 2.5
+    return res(/\bnu$/.test(pick) ? !yes : yes)
+  }
+  if (sel.marketType === 'ggnu') return res(!(a > 0 && b > 0))
+  if (/\bgg\b|ambele(?:\s+\S+)* inscriu/.test(m)) {
+    const yes = a > 0 && b > 0
+    return res(/\bnu$/.test(pick) ? !yes : yes)
+  }
+  const ou = m.match(/(peste|over|sub|under)\s*(\d+[.,]5)/)
+  if (ou) {
+    const line = num(ou[2])
+    // dacă piața numește o echipă ("Maroc - Total goluri"), se ia doar scorul ei
+    const side = sideOf(m.split(':')[0])
+    const value = side === -1 ? total : sel.score[side]
+    return res(ou[1] === 'sub' || ou[1] === 'under' ? value < line : value > line)
+  }
+  if (sel.marketType === 'sansa_dubla') {
+    if (pick.includes('1x')) return res(a >= b)
+    if (pick.includes('x2')) return res(b >= a)
+    if (pick.includes('12')) return res(a !== b)
+    return null
+  }
+  if (sel.marketType === 'winner') {
+    if (pick === '1') return res(a > b)
+    if (pick === '2') return res(b > a)
+    if (pick === 'x') return res(a === b)
+    const side = sideOf(pick)
+    return side === -1 ? null : res(sel.score[side] > sel.score[1 - side])
+  }
+  return null
+}
+
+// ─── Rezultate lipite manual ("Echipa1 - Echipa2 2-1") ─────────────────────
+
+export function parseResults(raw) {
+  const results = []
+  for (const line of raw.split('\n')) {
+    const t = line.trim()
+    const sc = t.match(/(\d+)\s*[-:]\s*(\d+)\s*$/)
+    if (!sc || sc.index === 0) continue
+    const teams = t
+      .slice(0, sc.index)
+      .replace(/[|,]/g, ' ')
+      .split(/\s+(?:vs|v)\s+|\s+-\s+/i)
+      .map((x) => x.trim())
+      .filter(Boolean)
+    if (teams.length < 2) continue
+    results.push({ t1: teams[0], t2: teams[1], s1: Number(sc[1]), s2: Number(sc[2]) })
+  }
+  return results
+}
+
+export function applyResultsToBet(bet, results) {
+  const selections = bet.selections.map((s) => {
+    if (s.score) return s
+    const r = results.find(
+      (r) => norm(s.match).includes(norm(r.t1)) && norm(s.match).includes(norm(r.t2)),
+    )
+    if (!r) return s
+    const flipped = norm(s.match).indexOf(norm(r.t2)) < norm(s.match).indexOf(norm(r.t1))
+    return { ...s, score: flipped ? [r.s2, r.s1] : [r.s1, r.s2] }
+  })
+
+  let status = bet.status
+  if (status === 'În așteptare') {
+    const outcomes = selections.map(settleSelection)
+    if (outcomes.some((o) => o === 'Pierdut')) status = 'Pierdut'
+    else if (outcomes.length && outcomes.every((o) => o === 'Câștigat')) status = 'Câștigat'
+  }
+  return { ...bet, selections, status }
 }
 
 // ─── Generator de bilete ────────────────────────────────────────────────────
