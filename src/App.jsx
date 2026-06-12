@@ -3,8 +3,11 @@ import {
   COTA_MINIMA,
   analyzeSelection,
   buildSuggestions,
+  detectTicketMeta,
   parseRawText,
 } from './engine.js'
+
+const APP_VERSION = 'v1.3'
 
 const MOCK_INPUT = `Mexic vs Africa de Sud | Under 2.5 Goluri | 1.72
 Argentina vs Nigeria | GG NU | 1.65
@@ -92,6 +95,32 @@ function ImportZone({ rawText, setRawText, onProcess }) {
         ⚡ Procesează
       </button>
     </Card>
+  )
+}
+
+// ─── Bilet finalizat detectat în paste ───────────────────────────────────────
+
+function TicketBanner({ meta, analyzed, onImport }) {
+  if (!meta || analyzed.length === 0) return null
+  const cotaTotala = analyzed.reduce((a, s) => a * s.odds, 1)
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4">
+      <div className="text-sm text-slate-300">
+        🎫 <span className="font-semibold">Bilet detectat:</span> {analyzed.length} selecții
+        {' '}· cotă totală <span className="font-mono text-slate-100">{cotaTotala.toFixed(2)}</span>
+        {meta.stake != null && <> · miză <span className="font-mono text-slate-100">{meta.stake.toFixed(2)} RON</span></>}
+        {' '}· status{' '}
+        <span className={`font-semibold ${meta.status === 'Câștigat' ? 'text-emerald-400' : meta.status === 'Pierdut' ? 'text-rose-400' : 'text-amber-400'}`}>
+          {meta.status}
+        </span>
+      </div>
+      <button
+        onClick={onImport}
+        className="rounded-lg bg-amber-600/90 px-3 py-1.5 text-sm font-semibold text-white transition hover:bg-amber-500 active:scale-95"
+      >
+        💾 Salvează în Istoric
+      </button>
+    </div>
   )
 }
 
@@ -357,6 +386,7 @@ const STORAGE_KEY = 'betting-analyzer-history'
 export default function App() {
   const [rawText, setRawText] = useState(MOCK_INPUT)
   const [analyzed, setAnalyzed] = useState(() => parseRawText(MOCK_INPUT).map(analyzeSelection))
+  const [ticketMeta, setTicketMeta] = useState(null)
   const [stake, setStake] = useState(100)
   const [bets, setBets] = useState(() => {
     try {
@@ -372,7 +402,27 @@ export default function App() {
 
   const suggestions = useMemo(() => buildSuggestions(analyzed), [analyzed])
 
-  const handleProcess = () => setAnalyzed(parseRawText(rawText).map(analyzeSelection))
+  const handleProcess = () => {
+    setAnalyzed(parseRawText(rawText).map(analyzeSelection))
+    setTicketMeta(detectTicketMeta(rawText))
+  }
+
+  const handleImportTicket = () => {
+    if (!ticketMeta || analyzed.length === 0) return
+    setBets((prev) => [
+      {
+        id: Date.now() + Math.random(),
+        data: new Date().toLocaleString('ro-RO', { dateStyle: 'short', timeStyle: 'short' }),
+        tip: `Bilet importat (${analyzed.length} sel.)`,
+        selections: analyzed,
+        cotaTotala: analyzed.reduce((a, s) => a * s.odds, 1),
+        miza: ticketMeta.stake ?? stake,
+        status: ticketMeta.status,
+      },
+      ...prev,
+    ])
+    setTicketMeta(null)
+  }
 
   const handleConfirm = (tip, parlay) => {
     setBets((prev) => [
@@ -402,13 +452,15 @@ export default function App() {
             ⚽🎾 Analizor & Tracker Pariuri
           </h1>
           <p className="text-sm text-slate-400">
-            World Cup 2026 · ATP/WTA Iarbă · Reguli: Under 2.5 / GG NU (≥45%), Grass Elo, cotă min. {COTA_MINIMA.toFixed(2)}
+            World Cup 2026 · ATP/WTA Iarbă · Baschet · Baseball · cotă min. {COTA_MINIMA.toFixed(2)}
+            {' '}· <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-xs text-emerald-400">{APP_VERSION}</span>
           </p>
         </header>
 
         <div className="grid gap-5 lg:grid-cols-5">
           <div className="space-y-5 lg:col-span-3">
             <ImportZone rawText={rawText} setRawText={setRawText} onProcess={handleProcess} />
+            <TicketBanner meta={ticketMeta} analyzed={analyzed} onImport={handleImportTicket} />
             <AnalysisEngine analyzed={analyzed} />
           </div>
           <div className="lg:col-span-2">

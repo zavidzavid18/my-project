@@ -21,9 +21,10 @@ const GRASS_ELO = {
   alcaraz: 2180, djokovic: 2150, sinner: 2090, rybakina: 2080,
   fritz: 2010, hurkacz: 2005, swiatek: 1985, paolini: 1980,
   medvedev: 1975, bublik: 1975, gauff: 1960, mpetshi: 1960,
-  lehecka: 1955, rune: 1950, shelton: 1940, cilic: 1945,
-  tiafoe: 1945, ostapenko: 1945, isner: 1930, opelka: 1920,
-  sabalenka: 2020, monfils: 1860,
+  lehecka: 1955, rune: 1950, mannarino: 1950, shelton: 1940,
+  cilic: 1945, tiafoe: 1945, ostapenko: 1945, isner: 1930,
+  opelka: 1920, zhizhen: 1905, giron: 1900, sabalenka: 2020,
+  monfils: 1860,
 }
 
 const SERVE_STATS = {
@@ -135,7 +136,7 @@ export function parseRawText(raw) {
     }
     i += 1
   }
-  return selections
+  return resolveAmbiguousSports(selections)
 }
 
 function parseSuperbetBlock(block, header) {
@@ -175,14 +176,20 @@ function classify({ match, market, odds, sportHint }) {
   const hint = sportHint ? norm(sportHint) : ''
 
   let sport
+  let sportSource = 'sure'
   if (hint.includes('tenis')) sport = 'tenis'
   else if (hint.includes('basket') || hint.includes('baschet')) sport = 'baschet'
   else if (hint.includes('baseball')) sport = 'baseball'
+  else if (hint.includes('fotbal')) sport = 'fotbal'
   else if (/asi|aces|duble|double fault|tiebreak|sa castige un set|castige un set|handicap meci \(set\)/.test(m)) sport = 'tenis'
   else if (/puncte|nba|baschet/.test(m)) sport = 'baschet'
   else if (/mlb|baseball|home run|inning/.test(m)) sport = 'baseball'
+  else if (/goluri|gg\s*nu|ngg|1x2|sansa dubla|corner|cartonas/.test(m)) sport = 'fotbal'
   else if (findKey(GRASS_ELO, match)) sport = 'tenis'
-  else sport = 'fotbal'
+  else {
+    sport = 'fotbal'
+    sportSource = 'default'
+  }
 
   let marketType = 'altele'
   if (/under\s*2[.,]5|sub\s*2[.,]5/.test(m)) marketType = 'under25'
@@ -195,7 +202,43 @@ function classify({ match, market, odds, sportHint }) {
   else if (/castigator|winner|victorie|final|ml\b|^1x2/.test(m)) marketType = 'winner'
   else if (/peste|over/.test(m)) marketType = 'over'
 
-  return { id: hash(match + market + odds), match, market, odds, sport, marketType }
+  return { id: hash(match + market + odds), match, market, odds, sport, marketType, sportSource }
+}
+
+// Selecțiile cu sport incert moștenesc sportul majoritar al biletului
+// (ex: jucători de tenis necunoscuți pe un bilet altfel plin de tenis).
+function resolveAmbiguousSports(selections) {
+  const counts = {}
+  for (const s of selections) {
+    if (s.sportSource === 'sure') counts[s.sport] = (counts[s.sport] || 0) + 1
+  }
+  const majority = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0]
+  if (majority) {
+    for (const s of selections) {
+      if (s.sportSource === 'default') s.sport = majority
+    }
+  }
+  return selections
+}
+
+// ─── Detectare bilet finalizat (status + miză) ──────────────────────────────
+
+export function detectTicketMeta(raw) {
+  const lines = raw.split('\n').map((l) => l.trim()).filter(Boolean)
+  let status = null
+  let stake = null
+  for (const l of lines) {
+    if (status === null) {
+      if (/^pierdut$/i.test(l)) status = 'Pierdut'
+      else if (/^c[âa][șs]tigat$/i.test(l)) status = 'Câștigat'
+    }
+    if (stake === null) {
+      const m = l.match(/^(\d+(?:[.,]\d{1,2})?)\s*(lei|ron)$/i)
+      if (m && num(m[1]) > 0) stake = num(m[1])
+    }
+  }
+  if (status === null && stake === null) return null
+  return { status: status ?? 'În așteptare', stake }
 }
 
 // ─── Analiză per selecție ───────────────────────────────────────────────────
