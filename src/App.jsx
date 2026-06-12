@@ -9,11 +9,12 @@ import {
   fetchUpcomingMatches,
   parseRawText,
   parseResults,
+  selectionOutcome,
   settleSelection,
   splitMatch,
 } from './engine.js'
 
-const APP_VERSION = 'v4.4'
+const APP_VERSION = 'v4.5'
 const SETTINGS_KEY = 'betting-analyzer-settings'
 
 const loadSettings = () => {
@@ -367,7 +368,7 @@ function Suggestions({ suggestions, stake, setStake, onConfirm }) {
 
 // ─── Setări (chei API, salvate doar în browser) ──────────────────────────────
 
-function SettingsPanel({ settings, onSave }) {
+function SettingsPanel({ settings, onSave, bets, onImportBets }) {
   const [apiFootballKey, setApiFootballKey] = useState(settings.apiFootballKey ?? '')
   const [saved, setSaved] = useState(false)
   return (
@@ -389,6 +390,48 @@ function SettingsPanel({ settings, onSave }) {
       >
         {saved ? '✓ Salvat' : '💾 Salvează setările'}
       </button>
+      <div className="mt-5 border-t border-slate-800 pt-4">
+        <p className="mb-2 text-xs text-slate-500">
+          Biletele tale există doar în acest browser. Fă-ți un backup ca să nu le pierzi
+          (sau ca să le muți pe alt dispozitiv):
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => {
+              const blob = new Blob([JSON.stringify(bets, null, 2)], { type: 'application/json' })
+              const a = document.createElement('a')
+              a.href = URL.createObjectURL(blob)
+              a.download = `bilete-${new Date().toISOString().slice(0, 10)}.json`
+              a.click()
+              URL.revokeObjectURL(a.href)
+            }}
+            className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-semibold text-slate-300 transition hover:bg-slate-800"
+          >
+            ⬇️ Exportă biletele ({bets.length})
+          </button>
+          <label className="cursor-pointer rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-semibold text-slate-300 transition hover:bg-slate-800">
+            ⬆️ Importă din backup
+            <input
+              type="file"
+              accept=".json,application/json"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0]
+                if (!file) return
+                const reader = new FileReader()
+                reader.onload = () => {
+                  try {
+                    const data = JSON.parse(reader.result)
+                    if (Array.isArray(data)) onImportBets(data)
+                  } catch { /* fișier invalid — ignorat */ }
+                }
+                reader.readAsText(file)
+                e.target.value = ''
+              }}
+            />
+          </label>
+        </div>
+      </div>
     </Card>
   )
 }
@@ -540,7 +583,8 @@ function CalendarView({ bets }) {
 
 // ─── Istoric Pariuri ─────────────────────────────────────────────────────────
 
-function BetCard({ bet, onStatusChange, onDelete, onReset }) {
+function BetCard({ bet, onStatusChange, onDelete, onReset, onLegMark }) {
+  const decided = bet.selections.filter((s) => selectionOutcome(s)).length
   const hasAutoData = bet.selections.some((s) => s.score || s.liveScore) || bet.status !== 'În așteptare'
   const profit = betProfit(bet)
   const payout = bet.miza * bet.cotaTotala
@@ -582,14 +626,41 @@ function BetCard({ bet, onStatusChange, onDelete, onReset }) {
           </button>
         </div>
       </div>
-      <ul className="mb-3 space-y-1 border-l-2 border-slate-800 pl-3 text-xs text-slate-300">
+      <ul className="mb-3 space-y-1.5 border-l-2 border-slate-800 pl-3 text-xs text-slate-300">
         {bet.selections.map((s) => {
-          const outcome = settleSelection(s)
+          const outcome = selectionOutcome(s)
           return (
-            <li key={s.id} className="flex items-start gap-1.5">
-              <span className="w-4 shrink-0">
-                {outcome === 'Câștigat' ? '✅' : outcome === 'Pierdut' ? '❌' : '·'}
-              </span>
+            <li key={s.id} className="flex items-start gap-2">
+              {onLegMark ? (
+                <span className="flex shrink-0 gap-1">
+                  <button
+                    onClick={() => onLegMark(bet.id, s.id, s.manual === 'Câștigat' ? null : 'Câștigat')}
+                    title="Bifează: selecția a ieșit"
+                    className={`h-5 w-5 rounded-md text-[11px] font-bold leading-none transition active:scale-90 ${
+                      outcome === 'Câștigat'
+                        ? 'bg-emerald-500 text-white shadow shadow-emerald-900/50'
+                        : 'border border-slate-700 text-slate-500 hover:border-emerald-500 hover:text-emerald-400'
+                    }`}
+                  >
+                    ✓
+                  </button>
+                  <button
+                    onClick={() => onLegMark(bet.id, s.id, s.manual === 'Pierdut' ? null : 'Pierdut')}
+                    title="Bifează: selecția a picat"
+                    className={`h-5 w-5 rounded-md text-[11px] font-bold leading-none transition active:scale-90 ${
+                      outcome === 'Pierdut'
+                        ? 'bg-rose-500 text-white shadow shadow-rose-900/50'
+                        : 'border border-slate-700 text-slate-500 hover:border-rose-500 hover:text-rose-400'
+                    }`}
+                  >
+                    ✗
+                  </button>
+                </span>
+              ) : (
+                <span className="w-4 shrink-0">
+                  {outcome === 'Câștigat' ? '✅' : outcome === 'Pierdut' ? '❌' : '·'}
+                </span>
+              )}
               <span>
                 {s.match} — <span className="text-slate-500">{s.market}</span>
                 {s.score && <span className="ml-1 font-mono text-slate-400">({s.score[0]}-{s.score[1]})</span>}
@@ -607,7 +678,10 @@ function BetCard({ bet, onStatusChange, onDelete, onReset }) {
         <span>Cotă <span className="font-mono font-semibold text-slate-200">@{fmtOdd(bet.cotaTotala)}</span></span>
         <span>Miză <span className="font-mono text-slate-200">{bet.miza} RON</span></span>
         {bet.status === 'În așteptare' ? (
-          <span>Plată potențială <span className="font-mono text-amber-400">{payout.toFixed(2)} RON</span></span>
+          <>
+            <span>Decise <span className="font-mono text-slate-200">{decided}/{bet.selections.length}</span></span>
+            <span>Plată potențială <span className="font-mono text-amber-400">{payout.toFixed(2)} RON</span></span>
+          </>
         ) : (
           <span>
             Rezultat{' '}
@@ -628,7 +702,7 @@ const SORTS = {
   castig: { label: 'Câștig potențial ↓', fn: (a, b) => b.miza * b.cotaTotala - a.miza * a.cotaTotala },
 }
 
-function History({ bets, onStatusChange, onDelete, onReset, onValidate, onVerifyOnline, verifying, verifyMsg, title = 'Bilete Active', emptyMsg = 'Niciun bilet activ. Confirmă o sugestie sau importă un bilet din tabul Analiză.' }) {
+function History({ bets, onStatusChange, onDelete, onReset, onLegMark, onValidate, onVerifyOnline, verifying, verifyMsg, title = 'Bilete Active', emptyMsg = 'Niciun bilet activ. Confirmă o sugestie sau importă un bilet din tabul Analiză.' }) {
   const [resultsText, setResultsText] = useState('')
   const [sortBy, setSortBy] = useState('recente')
   const pendingCount = bets.filter((b) => b.status === 'În așteptare').length
@@ -693,7 +767,7 @@ function History({ bets, onStatusChange, onDelete, onReset, onValidate, onVerify
       ) : (
         <div className="space-y-3">
           {sorted.map((b) => (
-            <BetCard key={b.id} bet={b} onStatusChange={onStatusChange} onDelete={onDelete} onReset={onReset} />
+            <BetCard key={b.id} bet={b} onStatusChange={onStatusChange} onDelete={onDelete} onReset={onReset} onLegMark={onLegMark} />
           ))}
         </div>
       )}
@@ -868,6 +942,30 @@ export default function App() {
 
   const handleDelete = (id) => setBets((prev) => prev.filter((b) => b.id !== id))
 
+  const handleImportBets = (imported) =>
+    setBets((prev) => {
+      const known = new Set(prev.map((b) => b.id))
+      const fresh = imported.filter((b) => b && b.id != null && !known.has(b.id) && Array.isArray(b.selections))
+      return [...fresh, ...prev]
+    })
+
+  // bifă manuală pe o selecție: ✓ a ieșit / ✗ a picat; biletul se decide
+  // singur când toate selecțiile au un rezultat
+  const handleLegMark = (betId, selId, outcome) =>
+    setBets((prev) =>
+      prev.map((b) => {
+        if (b.id !== betId) return b
+        const selections = b.selections.map((s) =>
+          s.id === selId ? { ...s, manual: outcome ?? undefined } : s,
+        )
+        const outcomes = selections.map(selectionOutcome)
+        let status = 'În așteptare'
+        if (outcomes.some((o) => o === 'Pierdut')) status = 'Pierdut'
+        else if (outcomes.length && outcomes.every((o) => o === 'Câștigat')) status = 'Câștigat'
+        return { ...b, selections, status }
+      }),
+    )
+
   // validare automată greșită? șterge scorurile găsite și readu În așteptare
   const handleResetBet = (id) =>
     setBets((prev) =>
@@ -876,7 +974,7 @@ export default function App() {
           ? {
               ...b,
               status: 'În așteptare',
-              selections: b.selections.map(({ score, liveScore, ...s }) => s),
+              selections: b.selections.map(({ score, liveScore, manual, ...s }) => s),
             }
           : b,
       ),
@@ -957,6 +1055,7 @@ export default function App() {
             onStatusChange={handleStatusChange}
             onDelete={handleDelete}
             onReset={handleResetBet}
+            onLegMark={handleLegMark}
             onValidate={handleValidate}
             onVerifyOnline={handleVerifyOnline}
             verifying={verifying}
@@ -974,7 +1073,7 @@ export default function App() {
               ) : (
                 <div className="space-y-3">
                   {settledBets.map((b) => (
-                    <BetCard key={b.id} bet={b} onStatusChange={handleStatusChange} onDelete={handleDelete} onReset={handleResetBet} />
+                    <BetCard key={b.id} bet={b} onStatusChange={handleStatusChange} onDelete={handleDelete} onReset={handleResetBet} onLegMark={handleLegMark} />
                   ))}
                 </div>
               )}
@@ -982,7 +1081,7 @@ export default function App() {
           </div>
         )}
 
-        {tab === 'setari' && <SettingsPanel settings={settings} onSave={handleSaveSettings} />}
+        {tab === 'setari' && <SettingsPanel settings={settings} onSave={handleSaveSettings} bets={bets} onImportBets={handleImportBets} />}
 
         <footer className="mt-6 text-center text-xs text-slate-600">
           Model intern — pariază responsabil. Probabilitățile sunt estimări, nu garanții.

@@ -501,6 +501,10 @@ export function settleSelection(sel) {
   return null
 }
 
+// Rezultatul unei selecții: bifa manuală a utilizatorului are prioritate,
+// apoi decizia automată din scor.
+export const selectionOutcome = (s) => s.manual ?? settleSelection(s)
+
 // ─── Rezultate lipite manual ("Echipa1 - Echipa2 2-1") ─────────────────────
 
 export function parseResults(raw) {
@@ -534,7 +538,7 @@ export function applyResultsToBet(bet, results) {
 
   let status = bet.status
   if (status === 'În așteptare') {
-    const outcomes = selections.map(settleSelection)
+    const outcomes = selections.map(selectionOutcome)
     if (outcomes.some((o) => o === 'Pierdut')) status = 'Pierdut'
     else if (outcomes.length && outcomes.every((o) => o === 'Câștigat')) status = 'Câștigat'
   }
