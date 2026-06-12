@@ -481,6 +481,54 @@ export function applyResultsToBet(bet, results) {
   return { ...bet, selections, status }
 }
 
+// ─── Căutare rezultate online (TheSportsDB, gratuit) ────────────────────────
+// Echipele sunt afișate în română la bookmakeri, dar baza de date e în
+// engleză — traducem înainte de căutare.
+
+const RO_EN_TEAMS = {
+  'mexic': 'Mexico', 'africa de sud': 'South Africa', 'franta': 'France',
+  'spania': 'Spain', 'anglia': 'England', 'olanda': 'Netherlands',
+  'germania': 'Germany', 'elvetia': 'Switzerland', 'brazilia': 'Brazil',
+  'maroc': 'Morocco', 'scotia': 'Scotland', 'norvegia': 'Norway',
+  'irak': 'Iraq', 'algeria': 'Algeria', 'iordania': 'Jordan',
+  'portugalia': 'Portugal', 'rd congo': 'DR Congo', 'croatia': 'Croatia',
+  'columbia': 'Colombia', 'bosnia si hertegovina': 'Bosnia and Herzegovina',
+  'bosnia-hertegovina': 'Bosnia and Herzegovina', 'haiti': 'Haiti',
+  'coasta de fildes': 'Ivory Coast', 'arabia saudita': 'Saudi Arabia',
+  'belgia': 'Belgium', 'ghana': 'Ghana', 'noua zeelanda': 'New Zealand',
+  'japonia': 'Japan', 'coreea de sud': 'South Korea', 'cehia': 'Czech Republic',
+  'suedia': 'Sweden', 'tunisia': 'Tunisia', 'capul verde': 'Cape Verde',
+  'sua': 'USA', 'turcia': 'Turkey', 'grecia': 'Greece', 'polonia': 'Poland',
+  'ungaria': 'Hungary', 'rusia': 'Russia', 'ucraina': 'Ukraine',
+  'danemarca': 'Denmark', 'finlanda': 'Finland', 'irlanda': 'Ireland',
+}
+
+export const splitMatch = (match) =>
+  match.split(/\s+(?:vs|v)\s+|\s+-\s+/i).map((t) => t.trim()).filter(Boolean)
+
+export async function fetchScoreOnline(sel) {
+  const teams = splitMatch(sel.match)
+  if (teams.length < 2) return null
+  const en = teams.map((t) => RO_EN_TEAMS[norm(t)] ?? t)
+  const url =
+    'https://www.thesportsdb.com/api/v1/json/123/searchevents.php?e=' +
+    encodeURIComponent(`${en[0]} vs ${en[1]}`)
+  const resp = await fetch(url)
+  if (!resp.ok) return null
+  const data = await resp.json()
+  const finished = (data?.event ?? []).filter(
+    (e) => e.intHomeScore != null && e.intAwayScore != null,
+  )
+  if (!finished.length) return null
+  finished.sort((a, b) => (b.dateEvent ?? '').localeCompare(a.dateEvent ?? ''))
+  const ev = finished[0]
+  const score = [Number(ev.intHomeScore), Number(ev.intAwayScore)]
+  const home = norm(ev.strHomeTeam ?? '')
+  const firstWord = norm(en[0]).split(' ')[0]
+  const homeIsFirst = home.includes(firstWord) || norm(en[0]).includes(home)
+  return homeIsFirst ? score : [score[1], score[0]]
+}
+
 // ─── Generator de bilete ────────────────────────────────────────────────────
 
 const combine = (sels) => ({

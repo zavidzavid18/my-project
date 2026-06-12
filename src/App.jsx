@@ -5,12 +5,14 @@ import {
   applyResultsToBet,
   buildSuggestions,
   detectTicketMeta,
+  fetchScoreOnline,
   parseRawText,
   parseResults,
   settleSelection,
+  splitMatch,
 } from './engine.js'
 
-const APP_VERSION = 'v1.4'
+const APP_VERSION = 'v2.0'
 
 const MOCK_INPUT = `Mexic vs Africa de Sud | Under 2.5 Goluri | 1.72
 Argentina vs Nigeria | GG NU | 1.65
@@ -304,32 +306,168 @@ function Suggestions({ suggestions, stake, setStake, onConfirm }) {
   )
 }
 
+// ─── Statistici (stil Pikkit) ────────────────────────────────────────────────
+
+const betProfit = (b) =>
+  b.status === 'Câștigat' ? b.miza * (b.cotaTotala - 1) : b.status === 'Pierdut' ? -b.miza : 0
+
+function StatTile({ label, value, accent = 'text-slate-100' }) {
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+      <div className="text-[11px] uppercase tracking-wider text-slate-500">{label}</div>
+      <div className={`mt-0.5 font-mono text-lg font-bold ${accent}`}>{value}</div>
+    </div>
+  )
+}
+
+function ProfitChart({ bets }) {
+  const settled = [...bets].reverse().filter((b) => b.status !== 'În așteptare')
+  if (settled.length < 2) return null
+  let acc = 0
+  const pts = [0, ...settled.map((b) => (acc += betProfit(b)))]
+  const min = Math.min(...pts, 0)
+  const max = Math.max(...pts, 0)
+  const range = max - min || 1
+  const W = 600
+  const H = 80
+  const x = (i) => (i / (pts.length - 1)) * W
+  const y = (p) => H - ((p - min) / range) * H
+  const path = pts.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p).toFixed(1)}`).join(' ')
+  const last = pts[pts.length - 1]
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+      <div className="mb-1 text-[11px] uppercase tracking-wider text-slate-500">Evoluție bankroll</div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="h-20 w-full" preserveAspectRatio="none">
+        <line x1="0" y1={y(0)} x2={W} y2={y(0)} stroke="#334155" strokeDasharray="4 4" strokeWidth="1" />
+        <path d={path} fill="none" stroke={last >= 0 ? '#34d399' : '#fb7185'} strokeWidth="2.5" strokeLinejoin="round" />
+      </svg>
+    </div>
+  )
+}
+
+function StatsBar({ bets }) {
+  const settled = bets.filter((b) => b.status !== 'În așteptare')
+  const won = bets.filter((b) => b.status === 'Câștigat')
+  const lost = bets.filter((b) => b.status === 'Pierdut')
+  const pending = bets.length - settled.length
+  const staked = settled.reduce((a, b) => a + b.miza, 0)
+  const profit = bets.reduce((a, b) => a + betProfit(b), 0)
+  const roi = staked ? (profit / staked) * 100 : 0
+  const winRate = settled.length ? (won.length / settled.length) * 100 : 0
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+        <StatTile
+          label="Profit net"
+          value={`${profit >= 0 ? '+' : ''}${profit.toFixed(2)} RON`}
+          accent={profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}
+        />
+        <StatTile
+          label="ROI"
+          value={`${roi >= 0 ? '+' : ''}${roi.toFixed(1)}%`}
+          accent={roi >= 0 ? 'text-emerald-400' : 'text-rose-400'}
+        />
+        <StatTile label="Rată câștig" value={`${winRate.toFixed(0)}%`} />
+        <StatTile label="Record" value={`${won.length}W - ${lost.length}L - ${pending}P`} />
+        <StatTile label="Miză decisă" value={`${staked.toFixed(0)} RON`} />
+      </div>
+      <ProfitChart bets={bets} />
+    </div>
+  )
+}
+
 // ─── Istoric Pariuri ─────────────────────────────────────────────────────────
 
-function History({ bets, onStatusChange, onDelete, onValidate }) {
+function BetCard({ bet, onStatusChange, onDelete }) {
+  const profit = betProfit(bet)
+  const payout = bet.miza * bet.cotaTotala
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4 transition hover:border-slate-700">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <span className={`rounded-full border px-2.5 py-0.5 text-xs font-bold ${STATUS_STYLES[bet.status]}`}>
+            {bet.status === 'Câștigat' ? '✓ Câștigat' : bet.status === 'Pierdut' ? '✗ Pierdut' : '⏳ În așteptare'}
+          </span>
+          <span className="text-sm font-semibold text-slate-200">{bet.tip}</span>
+          <span className="text-xs text-slate-500">{bet.data}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <select
+            value={bet.status}
+            onChange={(e) => onStatusChange(bet.id, e.target.value)}
+            className={`rounded-lg border bg-slate-950 px-2 py-1 text-xs font-semibold outline-none ${STATUS_STYLES[bet.status]}`}
+          >
+            <option>În așteptare</option>
+            <option>Câștigat</option>
+            <option>Pierdut</option>
+          </select>
+          <button
+            onClick={() => onDelete(bet.id)}
+            className="rounded-lg px-2 py-1 text-xs text-slate-500 transition hover:bg-rose-500/10 hover:text-rose-400"
+            title="Șterge biletul"
+          >
+            ✕
+          </button>
+        </div>
+      </div>
+      <ul className="mb-3 space-y-1 border-l-2 border-slate-800 pl-3 text-xs text-slate-300">
+        {bet.selections.map((s) => {
+          const outcome = settleSelection(s)
+          return (
+            <li key={s.id} className="flex items-start gap-1.5">
+              <span className="w-4 shrink-0">
+                {outcome === 'Câștigat' ? '✅' : outcome === 'Pierdut' ? '❌' : '·'}
+              </span>
+              <span>
+                {s.match} — <span className="text-slate-500">{s.market}</span>
+                {s.score && <span className="ml-1 font-mono text-slate-400">({s.score[0]}-{s.score[1]})</span>}
+              </span>
+            </li>
+          )
+        })}
+      </ul>
+      <div className="flex flex-wrap items-center gap-4 text-xs text-slate-400">
+        <span>Cotă <span className="font-mono font-semibold text-slate-200">@{fmtOdd(bet.cotaTotala)}</span></span>
+        <span>Miză <span className="font-mono text-slate-200">{bet.miza} RON</span></span>
+        {bet.status === 'În așteptare' ? (
+          <span>Plată potențială <span className="font-mono text-amber-400">{payout.toFixed(2)} RON</span></span>
+        ) : (
+          <span>
+            Rezultat{' '}
+            <span className={`font-mono font-bold ${profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+              {profit >= 0 ? '+' : ''}{profit.toFixed(2)} RON
+            </span>
+          </span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function History({ bets, onStatusChange, onDelete, onValidate, onVerifyOnline, verifying, verifyMsg }) {
   const [resultsText, setResultsText] = useState('')
-  const profit = bets.reduce((acc, b) => {
-    if (b.status === 'Câștigat') return acc + b.miza * (b.cotaTotala - 1)
-    if (b.status === 'Pierdut') return acc - b.miza
-    return acc
-  }, 0)
+  const pendingCount = bets.filter((b) => b.status === 'În așteptare').length
 
   return (
     <Card title="Istoric Pariuri" icon="📒">
-      <div className="mb-3 flex gap-4 text-sm">
-        <span className="text-slate-400">Bilete salvate: <span className="font-mono font-bold text-slate-100">{bets.length}</span></span>
-        <span className="text-slate-400">
-          Profit:{' '}
-          <span className={`font-mono font-bold ${profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-            {profit >= 0 ? '+' : ''}{profit.toFixed(2)} RON
-          </span>
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <button
+          onClick={onVerifyOnline}
+          disabled={verifying || pendingCount === 0}
+          className="rounded-lg bg-gradient-to-r from-sky-600 to-sky-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-sky-900/40 transition hover:from-sky-500 hover:to-sky-400 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {verifying ? '⏳ Caut rezultatele online...' : '🔍 Verifică rezultatele online'}
+        </button>
+        <span className="text-xs text-slate-400">
+          {verifyMsg || `${pendingCount} bilete în așteptare — caută automat scorurile finale pe TheSportsDB.`}
         </span>
       </div>
-      <div className="mb-4 rounded-xl border border-slate-800 bg-slate-950/60 p-3">
-        <p className="mb-2 text-xs text-slate-400">
-          🔄 <span className="font-semibold text-slate-300">Validare automată:</span> lipește rezultatele finale
-          (ex: <code className="rounded bg-slate-800 px-1">Coreea de Sud - Cehia 2-1</code>, câte unul pe linie)
-          și biletele în așteptare se marchează singure Câștigat / Pierdut.
+      <details className="mb-4 rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+        <summary className="cursor-pointer text-xs font-semibold text-slate-300">
+          ✍️ Validare manuală (dacă un meci nu e găsit online)
+        </summary>
+        <p className="mb-2 mt-2 text-xs text-slate-400">
+          Lipește rezultatele finale (ex: <code className="rounded bg-slate-800 px-1">Coreea de Sud - Cehia 2-1</code>, câte unul pe linie).
         </p>
         <div className="flex gap-2">
           <textarea
@@ -347,66 +485,14 @@ function History({ bets, onStatusChange, onDelete, onValidate }) {
             🔄 Validează
           </button>
         </div>
-      </div>
+      </details>
       {bets.length === 0 ? (
         <p className="text-sm text-slate-500">Niciun bilet confirmat încă. Confirmă o sugestie pentru a o urmări aici.</p>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm">
-            <thead>
-              <tr className="border-b border-slate-800 text-xs uppercase tracking-wider text-slate-500">
-                <th className="pb-2 pr-3">Data</th>
-                <th className="pb-2 pr-3">Tip</th>
-                <th className="pb-2 pr-3">Selecții</th>
-                <th className="pb-2 pr-3">Cotă</th>
-                <th className="pb-2 pr-3">Miză</th>
-                <th className="pb-2 pr-3">Status</th>
-                <th className="pb-2"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {bets.map((b) => (
-                <tr key={b.id} className="border-b border-slate-800/60">
-                  <td className="py-2.5 pr-3 text-xs text-slate-400">{b.data}</td>
-                  <td className="py-2.5 pr-3 text-slate-200">{b.tip}</td>
-                  <td className="py-2.5 pr-3 text-xs text-slate-300">
-                    {b.selections.map((s) => {
-                      const outcome = settleSelection(s)
-                      return (
-                        <div key={s.id}>
-                          {outcome === 'Câștigat' ? '✅ ' : outcome === 'Pierdut' ? '❌ ' : ''}
-                          {s.match} — <span className="text-slate-500">{s.market}</span>
-                          {s.score && <span className="ml-1 font-mono text-slate-400">({s.score[0]}-{s.score[1]})</span>}
-                        </div>
-                      )
-                    })}
-                  </td>
-                  <td className="py-2.5 pr-3 font-mono font-semibold text-slate-200">{fmtOdd(b.cotaTotala)}</td>
-                  <td className="py-2.5 pr-3 font-mono text-slate-300">{b.miza} RON</td>
-                  <td className="py-2.5 pr-3">
-                    <select
-                      value={b.status}
-                      onChange={(e) => onStatusChange(b.id, e.target.value)}
-                      className={`rounded-lg border px-2 py-1 text-xs font-semibold outline-none ${STATUS_STYLES[b.status]} bg-slate-950`}
-                    >
-                      <option>În așteptare</option>
-                      <option>Câștigat</option>
-                      <option>Pierdut</option>
-                    </select>
-                  </td>
-                  <td className="py-2.5 text-right">
-                    <button
-                      onClick={() => onDelete(b.id)}
-                      className="rounded-lg px-2 py-1 text-xs text-slate-500 transition hover:bg-rose-500/10 hover:text-rose-400"
-                      title="Șterge biletul"
-                    >
-                      ✕
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="space-y-3">
+          {bets.map((b) => (
+            <BetCard key={b.id} bet={b} onStatusChange={onStatusChange} onDelete={onDelete} />
+          ))}
         </div>
       )}
     </Card>
@@ -422,6 +508,8 @@ export default function App() {
   const [analyzed, setAnalyzed] = useState(() => parseRawText(MOCK_INPUT).map(analyzeSelection))
   const [ticketMeta, setTicketMeta] = useState(null)
   const [stake, setStake] = useState(100)
+  const [verifying, setVerifying] = useState(false)
+  const [verifyMsg, setVerifyMsg] = useState('')
   const [bets, setBets] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem(STORAGE_KEY)) ?? []
@@ -461,6 +549,37 @@ export default function App() {
     const results = parseResults(text)
     if (results.length === 0) return
     setBets((prev) => prev.map((b) => applyResultsToBet(b, results)))
+  }
+
+  const handleVerifyOnline = async () => {
+    setVerifying(true)
+    setVerifyMsg('')
+    try {
+      const pendingSels = []
+      for (const b of bets) {
+        if (b.status !== 'În așteptare') continue
+        for (const s of b.selections) {
+          if (!s.score && !pendingSels.some((x) => x.match === s.match)) pendingSels.push(s)
+        }
+      }
+      const results = []
+      for (const s of pendingSels) {
+        const score = await fetchScoreOnline(s).catch(() => null)
+        if (score) {
+          const teams = splitMatch(s.match)
+          results.push({ t1: teams[0], t2: teams[1], s1: score[0], s2: score[1] })
+        }
+      }
+      if (results.length) setBets((prev) => prev.map((b) => applyResultsToBet(b, results)))
+      setVerifyMsg(
+        results.length
+          ? `✅ Găsite ${results.length}/${pendingSels.length} rezultate finale — biletele au fost validate.`
+          : `Niciun rezultat final găsit încă (${pendingSels.length} meciuri căutate). Meciurile pot fi în desfășurare — încearcă mai târziu sau validează manual.`,
+      )
+    } catch (e) {
+      setVerifyMsg(`⚠️ Eroare la căutarea online: ${e.message}. Folosește validarea manuală.`)
+    }
+    setVerifying(false)
   }
 
   const handleConfirm = (tip, parlay) => {
@@ -512,8 +631,17 @@ export default function App() {
           </div>
         </div>
 
-        <div className="mt-5">
-          <History bets={bets} onStatusChange={handleStatusChange} onDelete={handleDelete} onValidate={handleValidate} />
+        <div className="mt-5 space-y-5">
+          <StatsBar bets={bets} />
+          <History
+            bets={bets}
+            onStatusChange={handleStatusChange}
+            onDelete={handleDelete}
+            onValidate={handleValidate}
+            onVerifyOnline={handleVerifyOnline}
+            verifying={verifying}
+            verifyMsg={verifyMsg}
+          />
         </div>
 
         <footer className="mt-6 text-center text-xs text-slate-600">
