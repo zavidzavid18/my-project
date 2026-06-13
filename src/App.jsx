@@ -39,7 +39,7 @@ import { TeamStatsPanel } from './components/stats/TeamStatsPanel.jsx'
 import { SettingsPanel } from './components/settings/SettingsPanel.jsx'
 import { filterByPeriod } from './lib/stats.js'
 
-const APP_VERSION = 'v6.1'
+const APP_VERSION = 'v6.2'
 const SETTINGS_KEY = 'betting-analyzer-settings'
 const STORAGE_KEY = 'betting-analyzer-history'
 const TEAM_STATS_KEY = 'analyzer-team-stats'

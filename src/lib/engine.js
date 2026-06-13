@@ -25,6 +25,10 @@ const GRASS_ELO = {
   cilic: 1945, tiafoe: 1945, ostapenko: 1945, isner: 1930,
   opelka: 1920, zhizhen: 1905, giron: 1900, sabalenka: 2020,
   monfils: 1860,
+  // calificări/turnee iarbă iunie 2026 — rating-uri aproximative pe iarbă
+  evans: 1925, boulter: 1950, vekic: 1965, hijikata: 1885,
+  prizmic: 1875, bellucci: 1885, majchrzak: 1870, monday: 1845,
+  kukushkin: 1845,
 }
 
 const SERVE_STATS = {
@@ -370,8 +374,12 @@ function pickedPlayerProb(sel) {
     const key = findKey(GRASS_ELO, name)
     return key ? GRASS_ELO[key] : 1900 + jitter(name, 60)
   }
-  // Selecția pariată: jucătorul menționat în piață, altfel primul.
-  const pickedIsP2 = p2 && norm(sel.market).includes(norm(p2).split(' ')[0])
+  // Selecția pariată: jucătorul al cărui nume (ORICARE cuvânt semnificativ —
+  // de regulă numele de familie) apare în piață; altfel primul. Acoperă
+  // „Final: Mpetshi" pentru „Giovanni Mpetshi Perricard".
+  const mkt = norm(sel.market)
+  const inMkt = (name) => norm(name).split(/\s+/).some((w) => w.length > 2 && mkt.includes(w))
+  const pickedIsP2 = p2 && inMkt(p2) && !inMkt(p1)
   const [me, opp] = pickedIsP2 ? [p2, p1] : [p1, p2 || p1]
   return 1 / (1 + Math.pow(10, (eloOf(opp) - eloOf(me)) / 400))
 }
