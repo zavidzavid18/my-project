@@ -833,12 +833,27 @@ const poissonCdf = (l, k) => {
 
 // Modelul real: probabilități din mediile celor două echipe.
 // Returnează null când piața nu e acoperită sau lipsesc datele.
+// media turneului — folosită când lipsesc statisticile unei echipe
+const DEFAULT_TEAM_STATS = {
+  golFor: 1.3, golAg: 1.3, cornFor: 4.8, cornAg: 4.8,
+  sotFor: 4.2, sotAg: 4.2, savFor: 3.0, savAg: 3.0,
+}
+
 export function footballStatsModel(sel, statsDb) {
   const teams = splitMatch(sel.match)
   if (teams.length < 2) return null
-  const A = lookupTeamStats(statsDb, teams[0])
-  const B = lookupTeamStats(statsDb, teams[1])
-  if (!A || !B) return null
+  let A = lookupTeamStats(statsDb, teams[0])
+  let B = lookupTeamStats(statsDb, teams[1])
+  if (!A && !B) return null
+  let estNote = null
+  if (!A) {
+    A = DEFAULT_TEAM_STATS
+    estNote = `⚠️ Statistici doar pentru ${teams[1]} — ${teams[0]} estimat la media turneului.`
+  }
+  if (!B) {
+    B = DEFAULT_TEAM_STATS
+    estNote = `⚠️ Statistici doar pentru ${teams[0]} — ${teams[1]} estimat la media turneului.`
+  }
   const m = norm(sel.market)
   const pick = (m.split(':').pop() || '').trim()
 
@@ -853,7 +868,10 @@ export function footballStatsModel(sel, statsDb) {
   const lineMatch = m.match(/(\d+)[.,]5/)
   const line = lineMatch ? Number(lineMatch[1]) : null
   const isUnder = /sub|under/.test(pick) || /(sub|under)\s*\d+[.,]5/.test(m)
-  const note = (txt) => [`Model Poisson pe statistici reale: ${txt}`]
+  const note = (txt) =>
+    estNote
+      ? [`Model Poisson pe statistici reale: ${txt}`, estNote]
+      : [`Model Poisson pe statistici reale: ${txt}`]
 
   // domeniu statistic: cornere / șuturi pe poartă / salvări / goluri
   const domain = /cornere|corner/.test(m) ? 'corn' : /sutur.*poarta|on target/.test(m) ? 'sot' : /mingi salvate|saves/.test(m) ? 'sav' : 'gol'

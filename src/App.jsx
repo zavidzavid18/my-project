@@ -16,7 +16,7 @@ import {
   splitMatch,
 } from './engine.js'
 
-const APP_VERSION = 'v5.0'
+const APP_VERSION = 'v5.1'
 const SETTINGS_KEY = 'betting-analyzer-settings'
 
 const loadSettings = () => {
