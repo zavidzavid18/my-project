@@ -3,8 +3,11 @@ import {
   analyzeSelection,
   applyResultsToBet,
   buildSuggestions,
+  DEMO_BET_TEXT,
+  DEMO_TEAM_STATS,
   detectTicketMeta,
   footballStatsModel,
+  isValueMarket,
   parseRawText,
   parseResults,
   parseTeamStats,
@@ -58,6 +61,12 @@ describe('parseRawText', () => {
     const sels = parseRawText('Hurkacz vs Medvedev | Total Asi Hurkacz: Peste 12.5 | 1.80 | tenis')
     expect(sels[0].sport).toBe('tenis')
     expect(sels[0].marketType).toBe('prop_asi')
+  })
+
+  test('„Total game-uri" e clasificat tenis + total_games, fără hint de sport', () => {
+    const [s] = parseRawText('Hurkacz vs Griekspoor | Total game-uri: Peste 22.5 | 1.90')
+    expect(s.sport).toBe('tenis')
+    expect(s.marketType).toBe('total_games')
   })
 })
 
@@ -230,7 +239,85 @@ describe('parseTeamStats + footballStatsModel', () => {
   })
 })
 
+// ─── Tenis: model Total game-uri ─────────────────────────────────────────────
+
+describe('totalGamesModel (via analyzeSelection)', () => {
+  const probFor = (line, side = 'Peste') =>
+    analyzeSelection(parseRawText(`Hurkacz vs Griekspoor | Total game-uri: ${side} ${line} | 2.00 | tenis`)[0]).modelProb
+
+  test('motorul „game-uri" e selectat și probabilitatea e în (0,1)', () => {
+    const a = analyzeSelection(parseRawText('Hurkacz vs Griekspoor | Total game-uri: Peste 22.5 | 1.90 | tenis')[0])
+    expect(a.engine).toMatch(/Game-uri/)
+    expect(a.modelProb).toBeGreaterThan(0)
+    expect(a.modelProb).toBeLessThan(1)
+  })
+
+  test('Peste și Sub pe aceeași linie sunt complementare', () => {
+    expect(probFor(22.5, 'Peste') + probFor(22.5, 'Sub')).toBeCloseTo(1, 5)
+  })
+
+  test('o linie mai mare scade probabilitatea de „Peste"', () => {
+    expect(probFor(26.5, 'Peste')).toBeLessThan(probFor(18.5, 'Peste'))
+  })
+
+  test('gap Elo mare (favorit clar) înclină spre Sub vs meci echilibrat', () => {
+    // Alcaraz(2180) vs Giron(1900) — gap mare → meci scurt → „Peste" mai puțin probabil
+    const lopsided = analyzeSelection(parseRawText('Alcaraz vs Giron | Total game-uri: Peste 22.5 | 2.00 | tenis')[0]).modelProb
+    // Fritz(2010) vs Hurkacz(2005) — echilibru + servă mare → meci lung → „Peste" mai probabil
+    const even = analyzeSelection(parseRawText('Fritz vs Hurkacz | Total game-uri: Peste 22.5 | 2.00 | tenis')[0]).modelProb
+    expect(even).toBeGreaterThan(lopsided)
+  })
+})
+
 // ─── Sugestii ────────────────────────────────────────────────────────────────
+
+describe('isValueMarket & Cota Mare', () => {
+  test('recunoaște GG NU, +1.5 seturi, câștigă un set și cotele mari', () => {
+    expect(isValueMarket({ marketType: 'ggnu', market: 'GG NU', odds: 1.7 })).toBe(true)
+    expect(isValueMarket({ marketType: 'handicap_set', market: 'Handicap seturi: X +1.5', odds: 1.6 })).toBe(true)
+    expect(isValueMarket({ marketType: 'castiga_set', market: 'Câștigă un set', odds: 1.4 })).toBe(true)
+    expect(isValueMarket({ marketType: 'winner', market: 'Final: X', odds: 2.4 })).toBe(true)
+    expect(isValueMarket({ marketType: 'winner', market: 'Final: X', odds: 1.5 })).toBe(false)
+  })
+
+  test('Biletul Cota Mare urcă piețele de valoare în față', () => {
+    const sel = (id, match, mt, market, odds, prob) => ({
+      id, match, marketType: mt, market, odds, modelProb: prob, ev: prob * odds - 1, verdict: '+EV', sport: 'fotbal',
+    })
+    const analyzed = [
+      sel(1, 'A vs B', 'winner', 'Final: A', 1.55, 0.7),     // favorit, NU value
+      sel(2, 'C vs D', 'ggnu', 'GG NU', 2.2, 0.5),           // value
+      sel(3, 'E vs F', 'handicap_set', 'Handicap: F +1.5', 2.1, 0.55), // value
+      sel(4, 'G vs H', 'winner', 'Final: G', 1.6, 0.66),     // favorit
+      sel(5, 'I vs J', 'castiga_set', 'Câștigă un set', 2.0, 0.55), // value
+    ]
+    const { cotaMare } = buildSuggestions(analyzed)
+    expect(cotaMare).not.toBeNull()
+    // primele selecții trebuie să fie piețele de valoare
+    expect(isValueMarket(cotaMare.selections[0])).toBe(true)
+    expect(isValueMarket(cotaMare.selections[1])).toBe(true)
+  })
+})
+
+describe('date demo', () => {
+  test('textul demo se parsează în selecții, inclusiv tenis +1.5 și total_games', () => {
+    const sels = parseRawText(DEMO_BET_TEXT)
+    expect(sels.length).toBeGreaterThanOrEqual(6)
+    expect(sels.some((s) => s.marketType === 'total_games')).toBe(true)
+    expect(sels.some((s) => s.marketType === 'handicap_set')).toBe(true)
+  })
+
+  test('cu statisticile demo, meciurile WC folosesc Poisson real', () => {
+    const sels = parseRawText(DEMO_BET_TEXT).map((s) => analyzeSelection(s, DEMO_TEAM_STATS))
+    const wc = sels.find((s) => s.match.includes('Mexic'))
+    expect(wc.engine).toMatch(/Poisson/)
+  })
+
+  test('demo-ul produce cel puțin câteva selecții +EV', () => {
+    const sels = parseRawText(DEMO_BET_TEXT).map((s) => analyzeSelection(s, DEMO_TEAM_STATS))
+    expect(sels.filter((s) => s.verdict === '+EV').length).toBeGreaterThanOrEqual(2)
+  })
+})
 
 describe('buildSuggestions', () => {
   const evSel = (id, match, prob, odds) => ({

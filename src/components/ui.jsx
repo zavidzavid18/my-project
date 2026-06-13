@@ -28,7 +28,7 @@ export function Card({ title, icon, children, accent = 'border-slate-800', actio
 
 export function VerdictBadge({ verdict }) {
   return verdict === '+EV' ? (
-    <span className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-0.5 text-xs font-bold text-emerald-400">
+    <span className="rounded-full border border-emerald-400/60 bg-emerald-500/15 px-2.5 py-0.5 text-xs font-bold text-emerald-300 shadow-[0_0_12px_-2px_rgba(16,185,129,0.7)]">
       +EV
     </span>
   ) : (

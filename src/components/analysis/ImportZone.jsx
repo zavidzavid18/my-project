@@ -1,6 +1,6 @@
 import { Card } from '../ui.jsx'
 
-export function ImportZone({ rawText, setRawText, onProcess, onLoadReal, loadingReal, importMsg }) {
+export function ImportZone({ rawText, setRawText, onProcess, onLoadReal, onLoadDemo, loadingReal, importMsg }) {
   return (
     <Card title="Zona de Import" icon="📥">
       <p className="mb-2 text-xs text-slate-400">
@@ -33,6 +33,15 @@ export function ImportZone({ rawText, setRawText, onProcess, onLoadReal, loading
           {loadingReal ? '⏳ Încarc...' : '📡 Meciuri reale'}
         </button>
       </div>
+      {onLoadDemo && (
+        <button
+          onClick={onLoadDemo}
+          title="Încarcă meciuri demo (Hurkacz, Griekspoor + WC) ca să vezi instant motorul calculând +EV. Nu îți atinge biletele salvate."
+          className="mt-2 w-full rounded-xl border border-violet-700/60 bg-violet-600/10 px-4 py-2 text-sm font-semibold text-violet-300 transition hover:bg-violet-600/20 active:scale-[0.98]"
+        >
+          🎓 Încarcă exemple (tenis +1.5 set / Total game-uri · WC Poisson)
+        </button>
+      )}
       {importMsg && <p className="mt-2 text-xs text-slate-400">{importMsg}</p>}
     </Card>
   )

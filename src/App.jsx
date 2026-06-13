@@ -3,6 +3,8 @@ import {
   analyzeSelection,
   applyResultsToBet,
   buildSuggestions,
+  DEMO_BET_TEXT,
+  DEMO_TEAM_STATS,
   detectTicketMeta,
   RATE_LIMIT,
   fetchScoreOnline,
@@ -37,7 +39,7 @@ import { TeamStatsPanel } from './components/stats/TeamStatsPanel.jsx'
 import { SettingsPanel } from './components/settings/SettingsPanel.jsx'
 import { filterByPeriod } from './lib/stats.js'
 
-const APP_VERSION = 'v6.0'
+const APP_VERSION = 'v6.1'
 const SETTINGS_KEY = 'betting-analyzer-settings'
 const STORAGE_KEY = 'betting-analyzer-history'
 const TEAM_STATS_KEY = 'analyzer-team-stats'
@@ -126,6 +128,19 @@ export default function App() {
       setImportMsg(`⚠️ Nu am putut încărca programul (${e.message}). Încearcă din nou sau lipește manual.`)
     }
     setLoadingReal(false)
+  }
+
+  // încarcă meciuri demo (non-distructiv): statisticile WC demo sunt folosite
+  // DOAR pentru această analiză, nu se salvează în baza ta de statistici
+  const handleLoadDemo = () => {
+    const demoStatsDb = { ...DEMO_TEAM_STATS, ...(statsDb ?? {}) }
+    setRawText(DEMO_BET_TEXT)
+    setAnalyzed(parseRawText(DEMO_BET_TEXT).map((s) => analyzeSelection(s, demoStatsDb)))
+    setTicketMeta(null)
+    setBannerDismissed(true)
+    setPicked([])
+    setAnalysisKey((k) => k + 1)
+    setImportMsg('🎓 Exemple încărcate: tenis (Handicap seturi +1.5 · Total game-uri) + WC (Poisson). Bifează selecții ca să-ți faci bilet, sau apasă Procesează pe textul tău.')
   }
 
   const handleTogglePick = (id) =>
@@ -395,7 +410,7 @@ export default function App() {
               Analizor & Tracker Pariuri
             </h1>
             <p className="text-xs text-slate-400">
-              WC 2026 · Tenis iarbă · Baschet · Baseball · Poisson pe date reale · Kelly staking
+              WC 2026 (Poisson) · Tenis iarbă (Elo: Final · Handicap seturi · Total game-uri) · Kelly staking
               {' '}· <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-emerald-400">{APP_VERSION}</span>
             </p>
           </div>
@@ -448,6 +463,7 @@ export default function App() {
                 setRawText={setRawText}
                 onProcess={handleProcess}
                 onLoadReal={handleLoadReal}
+                onLoadDemo={handleLoadDemo}
                 loadingReal={loadingReal}
                 importMsg={importMsg}
               />
