@@ -966,20 +966,33 @@ export function footballStatsModel(sel, statsDb) {
 
 // ─── Generator de bilete ────────────────────────────────────────────────────
 
-const combine = (sels) => ({
+export const combine = (sels) => ({
   selections: sels,
   cotaTotala: sels.reduce((a, s) => a * s.odds, 1),
   probTotala: sels.reduce((a, s) => a * s.modelProb, 1),
 })
 
+// pe un bilet combinat, un meci poate apărea o singură dată — bookmakerii
+// refuză combinarea selecțiilor din același meci
+const dedupeByMatch = (sels) => {
+  const seen = new Set()
+  return sels.filter((s) => {
+    const k = norm(s.match)
+    if (seen.has(k)) return false
+    seen.add(k)
+    return true
+  })
+}
+
 export function buildSuggestions(analyzed) {
   const ev = analyzed.filter((s) => s.verdict === '+EV')
 
-  const byProb = [...ev].sort((a, b) => b.modelProb - a.modelProb)
+  const byProb = dedupeByMatch([...ev].sort((a, b) => b.modelProb - a.modelProb))
   const byEv = [...ev].sort((a, b) => b.ev - a.ev)
+  const byEvUnique = dedupeByMatch(byEv)
 
   const sigur = byProb.length >= 2 ? combine(byProb.slice(0, 3)) : null
-  const cotaMare = byEv.length >= 5 ? combine(byEv.slice(0, Math.min(7, byEv.length))) : null
+  const cotaMare = byEvUnique.length >= 5 ? combine(byEvUnique.slice(0, Math.min(7, byEvUnique.length))) : null
   const single = byEv.slice(0, 3)
 
   return { evCount: ev.length, sigur, cotaMare, single }
