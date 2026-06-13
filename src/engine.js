@@ -574,16 +574,27 @@ export const splitMatch = (match) =>
 
 // Returnează { score, finished } — finished=false înseamnă meci în desfășurare
 // (scor live, biletul NU se decide încă).
+// eroare specială: limita de cereri a API-ului a fost atinsă (HTTP 429)
+export const RATE_LIMIT = 'RATE_LIMIT'
+const rlGuard = (resp) => {
+  if (resp?.status === 429) throw new Error(RATE_LIMIT)
+  return resp
+}
+const swallowExceptRl = (e) => {
+  if (e?.message === RATE_LIMIT) throw e
+  return null
+}
+
 export async function fetchScoreOnline(sel, { apiFootballKey } = {}) {
   // Tenis: căutarea după numele exact al evenimentului eșuează des —
   // se folosește lista meciurilor pe zile, potrivită după numele jucătorilor.
   if (sel.sport === 'tenis') {
-    const r = await fetchScoreTennis(sel).catch(() => null)
+    const r = await fetchScoreTennis(sel).catch(swallowExceptRl)
     if (r) return r
   }
   // API-Football (cheie proprie) are acoperire mai bună — încercat primul
   if (apiFootballKey && sel.sport === 'fotbal') {
-    const r = await fetchScoreApiFootball(sel, apiFootballKey).catch(() => null)
+    const r = await fetchScoreApiFootball(sel, apiFootballKey).catch(swallowExceptRl)
     if (r) return r
   }
   const score = await fetchScoreSportsDb(sel)
@@ -656,7 +667,7 @@ async function fetchScoreSportsDb(sel) {
   const url =
     'https://www.thesportsdb.com/api/v1/json/123/searchevents.php?e=' +
     encodeURIComponent(`${en[0]} vs ${en[1]}`)
-  const resp = await fetch(url)
+  const resp = rlGuard(await fetch(url))
   if (!resp.ok) return null
   const data = await resp.json()
   // doar evenimente din ultimele 7 zile — altfel riscăm să luăm o
@@ -681,10 +692,10 @@ async function fetchScoreApiFootball(sel, key) {
   const en = teams.map((t) => RO_EN_TEAMS[norm(t)] ?? t)
   const headers = { 'x-apisports-key': key }
 
-  const tResp = await fetch(
+  const tResp = rlGuard(await fetch(
     `https://v3.football.api-sports.io/teams?search=${encodeURIComponent(en[0])}`,
     { headers },
-  )
+  ))
   if (!tResp.ok) return null
   const teamId = (await tResp.json())?.response?.[0]?.team?.id
   if (!teamId) return null
@@ -698,10 +709,10 @@ async function fetchScoreApiFootball(sel, key) {
     return homeIsFirst ? [fx.goals.home, fx.goals.away] : [fx.goals.away, fx.goals.home]
   }
 
-  const fResp = await fetch(
+  const fResp = rlGuard(await fetch(
     `https://v3.football.api-sports.io/fixtures?team=${teamId}&last=15`,
     { headers },
-  )
+  ))
   if (!fResp.ok) return null
   const fixtures = (await fResp.json())?.response ?? []
   const done = fixtures.find(

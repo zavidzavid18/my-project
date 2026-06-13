@@ -5,6 +5,7 @@ import {
   applyResultsToBet,
   buildSuggestions,
   detectTicketMeta,
+  RATE_LIMIT,
   fetchScoreOnline,
   fetchUpcomingMatches,
   parseTeamStats,
@@ -16,7 +17,7 @@ import {
   splitMatch,
 } from './engine.js'
 
-const APP_VERSION = 'v5.2'
+const APP_VERSION = 'v5.3'
 const SETTINGS_KEY = 'betting-analyzer-settings'
 
 const loadSettings = () => {
@@ -1042,8 +1043,14 @@ export default function App() {
       const results = []
       const liveScores = new Map()
       let notFound = 0
+      let rateLimited = false
       for (const s of pendingSels) {
-        const r = await fetchScoreOnline(s, { apiFootballKey: settings.apiFootballKey }).catch(() => null)
+        let r = null
+        try {
+          r = await fetchScoreOnline(s, { apiFootballKey: settings.apiFootballKey })
+        } catch (e) {
+          if (e?.message === RATE_LIMIT) { rateLimited = true; break }
+        }
         if (!r) { notFound += 1; continue }
         if (r.finished) {
           const teams = splitMatch(s.match)
@@ -1068,6 +1075,7 @@ export default function App() {
       if (results.length) parts.push(`✅ ${results.length} finale`)
       if (liveScores.size) parts.push(`🔴 ${liveScores.size} LIVE`)
       if (notFound) parts.push(`⏳ ${notFound} negăsite (probabil nu au început)`)
+      if (rateLimited) parts.push('🚦 limită API atinsă — restul se verifică la următoarea rundă')
       setVerifyMsg(parts.length ? `${parts.join(' · ')} — verificat la ${new Date().toLocaleTimeString('ro-RO', { hour: '2-digit', minute: '2-digit' })}.` : 'Niciun meci în așteptare de verificat.')
     } catch (e) {
       setVerifyMsg(`⚠️ Eroare la căutarea online: ${e.message}. Folosește validarea manuală.`)
