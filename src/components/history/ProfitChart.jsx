@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { profitSeries } from '../../lib/stats.js'
 
 const W = 600
@@ -7,6 +7,7 @@ const H = 90
 // Graficul profitului cumulat, cu umplere gradient și inspecție la hover
 export function ProfitChart({ bets }) {
   const [hover, setHover] = useState(null)
+  const gradId = useId()
   const pts = profitSeries(bets)
   if (pts.length < 3) return null
 
@@ -56,12 +57,12 @@ export function ProfitChart({ bets }) {
         onMouseLeave={() => setHover(null)}
       >
         <defs>
-          <linearGradient id="bankrollFill" x1="0" y1="0" x2="0" y2="1">
+          <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor={lineColor} stopOpacity="0.25" />
             <stop offset="100%" stopColor={lineColor} stopOpacity="0" />
           </linearGradient>
         </defs>
-        <path d={area} fill="url(#bankrollFill)" />
+        <path d={area} fill={`url(#${gradId})`} />
         <line x1="0" y1={y(0)} x2={W} y2={y(0)} stroke="#334155" strokeDasharray="4 4" strokeWidth="1" />
         <path d={path} fill="none" stroke={lineColor} strokeWidth="2.5" strokeLinejoin="round" />
         {hover != null && (

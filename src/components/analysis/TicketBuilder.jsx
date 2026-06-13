@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { recommendedStake } from '../../lib/bankroll.js'
+import { statsKeyFor } from '../../lib/engine.js'
 import { fmtOdd, fmtPct } from '../ui.jsx'
 
 // „Biletul Meu" — biletul construit manual din selecțiile bifate în tabel
@@ -11,18 +12,20 @@ export function TicketBuilder({ selections, onRemove, onClear, onSave, bankroll,
   const ev = probTotala * cotaTotala - 1
   const sugerat = recommendedStake(probTotala, cotaTotala, bankroll, kellyDivisor)
 
-  // meciuri duplicate pe bilet — bookmakerii refuză combinația
+  // meciuri duplicate pe bilet — bookmakerii refuză combinația. Folosim
+  // aceeași normalizare ca motorul (diacritice scoase), nu doar lowercase.
   const matchCounts = {}
   for (const s of selections) {
-    const k = s.match.toLowerCase()
+    const k = statsKeyFor(s.match)
     matchCounts[k] = (matchCounts[k] || 0) + 1
   }
   const duplicated = Object.values(matchCounts).some((c) => c > 1)
 
+  // miza implicită urmărește recomandarea Kelly: se actualizează când se
+  // schimbă selecțiile, banca sau profilul de risc
   useEffect(() => {
     if (selections.length > 0 && sugerat > 0) setStake(sugerat)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selections.length])
+  }, [selections.length, sugerat])
 
   if (selections.length === 0) {
     return (

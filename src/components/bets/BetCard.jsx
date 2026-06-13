@@ -41,6 +41,7 @@ export function BetCard({ bet, onStatusChange, onDelete, onReset, onLegMark }) {
           )}
           <button
             onClick={() => onDelete(bet.id)}
+            aria-label={`Șterge biletul ${bet.tip}`}
             className="rounded-lg px-2 py-1 text-xs text-slate-500 transition hover:bg-rose-500/10 hover:text-rose-400"
             title="Șterge biletul (cu Anulează în notificare)"
           >
@@ -65,6 +66,8 @@ export function BetCard({ bet, onStatusChange, onDelete, onReset, onLegMark }) {
                 <span className="flex shrink-0 gap-1">
                   <button
                     onClick={() => onLegMark(bet.id, s.id, s.manual === 'Câștigat' ? null : 'Câștigat')}
+                    aria-label={`Marchează „${s.match}" drept câștigată`}
+                    aria-pressed={outcome === 'Câștigat'}
                     title="Bifează: selecția a ieșit"
                     className={`h-5 w-5 rounded-md text-[11px] font-bold leading-none transition active:scale-90 ${
                       outcome === 'Câștigat'
@@ -76,6 +79,8 @@ export function BetCard({ bet, onStatusChange, onDelete, onReset, onLegMark }) {
                   </button>
                   <button
                     onClick={() => onLegMark(bet.id, s.id, s.manual === 'Pierdut' ? null : 'Pierdut')}
+                    aria-label={`Marchează „${s.match}" drept pierdută`}
+                    aria-pressed={outcome === 'Pierdut'}
                     title="Bifează: selecția a picat"
                     className={`h-5 w-5 rounded-md text-[11px] font-bold leading-none transition active:scale-90 ${
                       outcome === 'Pierdut'

@@ -143,6 +143,8 @@ function SelectionRow({ s, isPicked, onTogglePick, expanded, onToggle }) {
               e.stopPropagation()
               onTogglePick()
             }}
+            aria-label={`${isPicked ? 'Scoate' : 'Adaugă'} „${s.match} — ${s.market}" ${isPicked ? 'de pe' : 'pe'} biletul meu`}
+            aria-pressed={isPicked}
             title={isPicked ? 'Scoate de pe biletul meu' : 'Adaugă pe biletul meu'}
             className={`h-5 w-5 rounded-md text-[11px] font-bold leading-none transition active:scale-90 ${
               isPicked

@@ -19,6 +19,7 @@ import {
   DEFAULT_KELLY_DIVISOR,
   pendingStake,
 } from './lib/bankroll.js'
+import { isValidBet, sanitizeSettings, sanitizeTeamStats } from './lib/backup.js'
 import { useLocalStorage } from './hooks/useLocalStorage.js'
 import { useToasts } from './hooks/useToasts.js'
 import { Card, EmptyState, ToastHost } from './components/ui.jsx'
@@ -194,9 +195,13 @@ export default function App() {
       }
       const results = []
       const liveScores = new Map()
+      // doar meciurile chiar interogate în această rundă pot avea scorul live
+      // șters — altfel un break la limita API ar pierde un LIVE valid de dinainte
+      const attempted = new Set()
       let notFound = 0
       let rateLimited = false
       for (const s of pendingSels) {
+        attempted.add(s.match)
         let r = null
         try {
           r = await fetchScoreOnline(s, { apiFootballKey: settings.apiFootballKey })
@@ -217,7 +222,13 @@ export default function App() {
             ...b,
             selections: b.selections.map((s) => {
               const live = liveScores.get(s.match)
-              return live ? { ...s, liveScore: live } : s.liveScore && !liveScores.has(s.match) ? { ...s, liveScore: undefined } : s
+              if (live) return { ...s, liveScore: live }
+              // scorul live se curăță doar pentru meciuri interogate acum și
+              // care nu mai sunt LIVE (s-au încheiat sau nu mai apar)
+              if (s.liveScore && attempted.has(s.match) && !liveScores.has(s.match)) {
+                return { ...s, liveScore: undefined }
+              }
+              return s
             }),
           }
           return applyResultsToBet(withLive, results)
@@ -317,9 +328,12 @@ export default function App() {
 
   // ── Backup complet (acceptă și formatul vechi: doar lista de bilete) ───────
 
+  // doar biletele bine-formate intră în istoric — câmpurile lor alimentează
+  // calculele de bancă/profit, deci orice valoare coruptă e respinsă
   const mergeBets = (imported) => {
+    if (!Array.isArray(imported)) return 0
     const known = new Set(bets.map((b) => b.id))
-    const fresh = imported.filter((b) => b && b.id != null && !known.has(b.id) && Array.isArray(b.selections))
+    const fresh = imported.filter((b) => isValidBet(b) && !known.has(b.id))
     if (fresh.length) {
       setBets((prev) => {
         const ids = new Set(prev.map((b) => b.id))
@@ -332,24 +346,26 @@ export default function App() {
   const handleImportBackup = (data) => {
     if (Array.isArray(data)) {
       const added = mergeBets(data)
-      return `✅ Backup vechi importat: ${added} bilete noi.`
+      return added ? `✅ Backup vechi importat: ${added} bilete noi.` : '⚠️ Niciun bilet valid în fișier.'
     }
     if (!data || typeof data !== 'object') return null
     const parts = []
     if (Array.isArray(data.bets)) parts.push(`${mergeBets(data.bets)} bilete noi`)
-    if (data.teamStats && typeof data.teamStats === 'object') {
-      setTeamStats((prev) => ({ ...prev, ...data.teamStats }))
-      parts.push(`${Object.keys(data.teamStats).length} echipe`)
+    const teamStats = sanitizeTeamStats(data.teamStats)
+    if (Object.keys(teamStats).length) {
+      setTeamStats((prev) => ({ ...prev, ...teamStats }))
+      parts.push(`${Object.keys(teamStats).length} echipe`)
     }
-    if (data.settings && typeof data.settings === 'object') {
+    const cleanSettings = sanitizeSettings(data.settings)
+    if (Object.keys(cleanSettings).length) {
       // setările existente (ne-goale) au prioritate față de cele importate
       setSettings((prev) => ({
-        ...data.settings,
+        ...cleanSettings,
         ...Object.fromEntries(Object.entries(prev).filter(([, v]) => v !== '' && v != null)),
       }))
       parts.push('setări')
     }
-    if (parts.length === 0) return null
+    if (parts.length === 0) return '⚠️ Fișierul nu pare un backup valid.'
     return `✅ Backup importat: ${parts.join(', ')}.`
   }
 
@@ -398,10 +414,14 @@ export default function App() {
           </div>
         </header>
 
-        <nav className="sticky top-2 z-20 mb-5 flex gap-1.5 overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/90 p-1.5 backdrop-blur">
+        <nav role="tablist" aria-label="Secțiuni" className="sticky top-2 z-20 mb-5 flex gap-1.5 overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/90 p-1.5 backdrop-blur">
           {TABS.map((t) => (
             <button
               key={t.id}
+              role="tab"
+              id={`tab-${t.id}`}
+              aria-selected={tab === t.id}
+              aria-controls={`panel-${t.id}`}
               onClick={() => setTab(t.id)}
               className={`flex-1 whitespace-nowrap rounded-xl px-4 py-2.5 text-sm font-semibold transition active:scale-[0.98] ${
                 tab === t.id
@@ -419,6 +439,7 @@ export default function App() {
           ))}
         </nav>
 
+        <main id={`panel-${tab}`} role="tabpanel" aria-labelledby={`tab-${tab}`} tabIndex={-1} className="outline-none">
         {tab === 'analiza' && (
           <div className="grid gap-5 lg:grid-cols-5">
             <div className="space-y-5 lg:col-span-3">
@@ -512,6 +533,7 @@ export default function App() {
 
         {tab === 'setari' && (
           <SettingsPanel
+            key={`${settings.bankrollStart ?? ''}-${settings.kellyDivisor ?? ''}-${settings.apiFootballKey ?? ''}`}
             settings={settings}
             onSave={setSettings}
             bets={bets}
@@ -519,6 +541,7 @@ export default function App() {
             onImportBackup={handleImportBackup}
           />
         )}
+        </main>
 
         <footer className="mt-6 text-center text-xs text-slate-600">
           Model intern — pariază responsabil. Probabilitățile sunt estimări, nu garanții.

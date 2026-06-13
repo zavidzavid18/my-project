@@ -68,7 +68,7 @@ export function ResearchLinks({ match, compact = false }) {
           key={l.label}
           href={l.href}
           target="_blank"
-          rel="noreferrer"
+          rel="noopener noreferrer"
           className={
             compact
               ? 'rounded px-1 text-[10px] text-slate-500 transition hover:bg-slate-800 hover:text-slate-200'
@@ -109,8 +109,7 @@ function Toast({ toast, onDismiss }) {
   useEffect(() => {
     const id = setTimeout(() => onDismiss(toast.id), toast.ttl ?? 6000)
     return () => clearTimeout(id)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [toast.id])
+  }, [toast.id, toast.ttl, onDismiss])
 
   return (
     <div

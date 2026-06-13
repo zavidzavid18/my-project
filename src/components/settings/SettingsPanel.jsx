@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { DEFAULT_BANKROLL_START, DEFAULT_KELLY_DIVISOR, KELLY_PROFILES } from '../../lib/bankroll.js'
 import { Card } from '../ui.jsx'
 
@@ -11,6 +11,13 @@ export function SettingsPanel({ settings, onSave, bets, teamStats, onImportBacku
   const [saved, setSaved] = useState(false)
   const [importMsg, setImportMsg] = useState('')
 
+  // confirmarea „✓ Salvat" se stinge după 2s, cu cleanup la demontare
+  useEffect(() => {
+    if (!saved) return
+    const id = setTimeout(() => setSaved(false), 2000)
+    return () => clearTimeout(id)
+  }, [saved])
+
   const handleSave = () => {
     onSave({
       ...settings,
@@ -19,7 +26,6 @@ export function SettingsPanel({ settings, onSave, bets, teamStats, onImportBacku
       kellyDivisor: Number(kellyDivisor) || DEFAULT_KELLY_DIVISOR,
     })
     setSaved(true)
-    setTimeout(() => setSaved(false), 2000)
   }
 
   const handleExport = () => {
