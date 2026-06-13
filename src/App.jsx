@@ -16,7 +16,7 @@ import {
   splitMatch,
 } from './engine.js'
 
-const APP_VERSION = 'v5.1'
+const APP_VERSION = 'v5.2'
 const SETTINGS_KEY = 'betting-analyzer-settings'
 
 const loadSettings = () => {
@@ -70,6 +70,36 @@ function SportTag({ sport }) {
   return (
     <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-slate-400">
       {SPORT_LABELS[sport] ?? sport}
+    </span>
+  )
+}
+
+// Linkuri rapide de cercetare pentru un meci (părerile oamenilor + video)
+function ResearchLinks({ match, compact = false }) {
+  const q = encodeURIComponent(match)
+  const links = [
+    { label: '🔎 Reddit', href: `https://www.reddit.com/search/?q=${encodeURIComponent(match + ' prediction')}` },
+    { label: '▶️ YouTube', href: `https://www.youtube.com/results?search_query=${q}` },
+    { label: '🌐 Google', href: `https://www.google.com/search?q=${encodeURIComponent(match + ' statistici meci')}` },
+  ]
+  return (
+    <span className={compact ? 'inline-flex gap-1' : 'inline-flex flex-wrap gap-1.5'}>
+      {links.map((l) => (
+        <a
+          key={l.label}
+          href={l.href}
+          target="_blank"
+          rel="noreferrer"
+          className={
+            compact
+              ? 'rounded px-1 text-[10px] text-slate-500 transition hover:bg-slate-800 hover:text-slate-200'
+              : 'rounded-lg border border-slate-700 px-2 py-0.5 text-[11px] font-semibold text-slate-400 transition hover:bg-slate-800 hover:text-slate-200'
+          }
+          title={`Caută „${match}" pe ${l.label.slice(2).trim()}`}
+        >
+          {compact ? l.label.slice(0, 2) : l.label}
+        </a>
+      ))}
     </span>
   )
 }
@@ -259,6 +289,10 @@ function SelectionRow({ s, expanded, onToggle }) {
             <ul className="list-disc space-y-0.5 pl-5 text-xs text-slate-400">
               {s.reasons.map((r, i) => <li key={i}>{r}</li>)}
             </ul>
+            <div className="mt-2 pl-5">
+              <span className="mr-2 text-[11px] text-slate-500">Cercetează:</span>
+              <ResearchLinks match={s.match} />
+            </div>
           </td>
         </tr>
       )}
@@ -348,6 +382,12 @@ function Suggestions({ suggestions, stake, setStake, onConfirm }) {
                   <span className="text-slate-300">
                     {s.match} — <span className="text-slate-400">{s.market}</span>
                     <span className="ml-2 font-mono text-emerald-400">EV +{(s.ev * 100).toFixed(1)}%</span>
+                    <span
+                      className="ml-2 font-mono text-violet-300"
+                      title="Criteriul Kelly: procentul din bancă justificat matematic pentru acest pariu"
+                    >
+                      Kelly {Math.max(0, ((s.modelProb * s.odds - 1) / (s.odds - 1)) * 100).toFixed(1)}%
+                    </span>
                   </span>
                   <span className="flex items-center gap-2">
                     <span className="font-mono font-semibold text-slate-200">{fmtOdd(s.odds)}</span>
@@ -765,6 +805,7 @@ function BetCard({ bet, onStatusChange, onDelete, onReset, onLegMark }) {
                     🔴 LIVE {s.liveScore[0]}-{s.liveScore[1]}
                   </span>
                 )}
+                <span className="ml-1.5"><ResearchLinks match={s.match} compact /></span>
               </span>
             </li>
           )
