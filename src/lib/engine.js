@@ -25,6 +25,10 @@ const GRASS_ELO = {
   cilic: 1945, tiafoe: 1945, ostapenko: 1945, isner: 1930,
   opelka: 1920, zhizhen: 1905, giron: 1900, sabalenka: 2020,
   monfils: 1860,
+  // calificări/turnee iarbă iunie 2026 — rating-uri aproximative pe iarbă
+  evans: 1925, boulter: 1950, vekic: 1965, hijikata: 1885,
+  prizmic: 1875, bellucci: 1885, majchrzak: 1870, monday: 1845,
+  kukushkin: 1845,
 }
 
 const SERVE_STATS = {
@@ -225,7 +229,7 @@ function classify({ match, market, odds, sportHint }) {
   else if (hint.includes('basket') || hint.includes('baschet')) sport = 'baschet'
   else if (hint.includes('baseball')) sport = 'baseball'
   else if (hint.includes('fotbal')) sport = 'fotbal'
-  else if (/asi|aces|duble|double fault|tiebreak|sa castige un set|castige un set|handicap meci \(set\)/.test(m)) sport = 'tenis'
+  else if (/asi|aces|duble|double fault|tiebreak|sa castige un set|castige un set|handicap meci \(set\)|game-uri|total game/.test(m)) sport = 'tenis'
   else if (/puncte|nba|baschet/.test(m)) sport = 'baschet'
   else if (/mlb|baseball|home run|inning/.test(m)) sport = 'baseball'
   else if (/goluri|gg\s*nu|ngg|1x2|sansa dubla|corner|cartonas/.test(m)) sport = 'fotbal'
@@ -242,6 +246,7 @@ function classify({ match, market, odds, sportHint }) {
   else if (/duble|double fault/.test(m)) marketType = 'prop_duble'
   else if (/handicap.*set|set.*handicap/.test(m)) marketType = 'handicap_set'
   else if (/castige un set/.test(m)) marketType = 'castiga_set'
+  else if (/game-uri|total game/.test(m)) marketType = 'total_games'
   else if (/sansa dubla/.test(m)) marketType = 'sansa_dubla'
   else if (/castigator|winner|victorie|final|ml\b|^1x2/.test(m)) marketType = 'winner'
   else if (/peste|over/.test(m)) marketType = 'over'
@@ -311,6 +316,11 @@ export function analyzeSelection(sel, statsDb = null) {
       engine = 'Grass Elo (Seturi)'
       modelProb = setMarketModel(sel)
       reasons.push('Probabilitate pe seturi derivată din Grass Elo.')
+    } else if (sel.marketType === 'total_games') {
+      const g = totalGamesModel(sel)
+      engine = 'Grass Elo + Servă (Game-uri)'
+      modelProb = g.prob
+      reasons.push(...g.notes)
     } else {
       engine = 'Grass Elo'
       modelProb = grassEloModel(sel)
@@ -364,8 +374,12 @@ function pickedPlayerProb(sel) {
     const key = findKey(GRASS_ELO, name)
     return key ? GRASS_ELO[key] : 1900 + jitter(name, 60)
   }
-  // Selecția pariată: jucătorul menționat în piață, altfel primul.
-  const pickedIsP2 = p2 && norm(sel.market).includes(norm(p2).split(' ')[0])
+  // Selecția pariată: jucătorul al cărui nume (ORICARE cuvânt semnificativ —
+  // de regulă numele de familie) apare în piață; altfel primul. Acoperă
+  // „Final: Mpetshi" pentru „Giovanni Mpetshi Perricard".
+  const mkt = norm(sel.market)
+  const inMkt = (name) => norm(name).split(/\s+/).some((w) => w.length > 2 && mkt.includes(w))
+  const pickedIsP2 = p2 && inMkt(p2) && !inMkt(p1)
   const [me, opp] = pickedIsP2 ? [p2, p1] : [p1, p2 || p1]
   return 1 / (1 + Math.pow(10, (eloOf(opp) - eloOf(me)) / 400))
 }
@@ -381,6 +395,45 @@ function setMarketModel(sel) {
   // -1.5 seturi = câștigă 2-0; +1.5 / câștigă un set = ia măcar un set
   const prob = minus ? pSet * pSet : 1 - (1 - pSet) * (1 - pSet)
   return clamp(prob + jitter(sel.match, 0.02), 0.03, 0.97)
+}
+
+// Total game-uri: lungimea meciului proiectată din (a) echilibrul Elo → câte
+// seturi probabile și (b) puterea la serviciu pe iarbă → game-uri per set și
+// tiebreak-uri. Gap Elo mare → meci scurt (Sub); Elo apropiat + servă mare →
+// meci lung, tiebreak-uri (Peste).
+function totalGamesModel(sel) {
+  const players = splitMatch(sel.match)
+  const eloOf = (name) => {
+    const key = findKey(GRASS_ELO, name)
+    return key ? GRASS_ELO[key] : 1900 + jitter(name, 60)
+  }
+  const acesOf = (name) => {
+    const key = findKey(SERVE_STATS, name)
+    return key ? SERVE_STATS[key][0] : 9.0
+  }
+  const [n1 = sel.match, n2 = ''] = players
+  const pFav = 1 / (1 + Math.pow(10, -Math.abs(eloOf(n1) - eloOf(n2)) / 400))
+  const pSet = clamp(0.5 + (pFav - 0.5) * 0.75, 0.5, 0.95)
+  const pThree = 2 * pSet * (1 - pSet) // best-of-3: șansa unui set decisiv
+  const expectedSets = 2 + pThree
+
+  const avgAces = (acesOf(n1) + acesOf(n2)) / 2
+  const serveAdj = clamp((avgAces - 9) / 9, -0.5, 0.9) * 1.6 // servă mare → mai multe game-uri
+  const compAdj = (1 - Math.min(1, Math.abs(pFav - 0.5) * 2)) * 0.6 // echilibru → seturi lungi
+  const gamesPerSet = clamp(9.4 + serveAdj + compAdj, 8.6, 11.4)
+  const mu = expectedSets * gamesPerSet
+
+  const lineMatch = norm(sel.market).match(/(\d+(?:[.,]\d+)?)/)
+  const line = lineMatch ? num(lineMatch[1]) : 22.5
+  const isUnder = /sub|under/.test(norm(sel.market))
+  const pOver = logistic((mu - line) / 3.0)
+  return {
+    prob: clamp(isUnder ? 1 - pOver : pOver, 0.05, 0.95),
+    notes: [
+      `Lungime proiectată ≈ ${mu.toFixed(1)} game-uri (≈ ${expectedSets.toFixed(2)} seturi × ${gamesPerSet.toFixed(1)}/set).`,
+      `Modelul înclină spre „${mu >= line ? 'Peste' : 'Sub'} ${line}".`,
+    ],
+  }
 }
 
 function serveModel(sel) {
@@ -966,21 +1019,66 @@ export function footballStatsModel(sel, statsDb) {
 
 // ─── Generator de bilete ────────────────────────────────────────────────────
 
-const combine = (sels) => ({
+export const combine = (sels) => ({
   selections: sels,
   cotaTotala: sels.reduce((a, s) => a * s.odds, 1),
   probTotala: sels.reduce((a, s) => a * s.modelProb, 1),
 })
 
+// pe un bilet combinat, un meci poate apărea o singură dată — bookmakerii
+// refuză combinarea selecțiilor din același meci
+const dedupeByMatch = (sels) => {
+  const seen = new Set()
+  return sels.filter((s) => {
+    const k = norm(s.match)
+    if (seen.has(k)) return false
+    seen.add(k)
+    return true
+  })
+}
+
+// „Biletul Cota Mare" preferă piețele de valoare la cotă mare: underdog cu
+// +1.5 seturi / câștigă un set, GG NU sau orice selecție cu cotă ≥ 2.00.
+export const isValueMarket = (s) =>
+  s.marketType === 'ggnu' ||
+  s.marketType === 'castiga_set' ||
+  (s.marketType === 'handicap_set' && /\+\s*1[.,]5/.test(s.market)) ||
+  s.odds >= 2.0
+
 export function buildSuggestions(analyzed) {
   const ev = analyzed.filter((s) => s.verdict === '+EV')
 
-  const byProb = [...ev].sort((a, b) => b.modelProb - a.modelProb)
+  const byProb = dedupeByMatch([...ev].sort((a, b) => b.modelProb - a.modelProb))
   const byEv = [...ev].sort((a, b) => b.ev - a.ev)
+  // valoarea (+1.5 set / GG NU / underdog) urcă în topul biletului de cotă mare,
+  // departajarea finală rămânând după EV
+  const valueFirst = dedupeByMatch(
+    [...ev].sort((a, b) => (isValueMarket(b) - isValueMarket(a)) || (b.ev - a.ev)),
+  )
 
   const sigur = byProb.length >= 2 ? combine(byProb.slice(0, 3)) : null
-  const cotaMare = byEv.length >= 5 ? combine(byEv.slice(0, Math.min(7, byEv.length))) : null
+  const cotaMare = valueFirst.length >= 5 ? combine(valueFirst.slice(0, Math.min(7, valueFirst.length))) : null
   const single = byEv.slice(0, 3)
 
   return { evCount: ev.length, sigur, cotaMare, single }
+}
+
+// ─── Date demo (buton „Încarcă exemple", non-distructiv) ────────────────────
+// Meciuri reale pentru jucători din tabelele Elo/servă + 2 meciuri WC. Statisticile
+// de echipă demo sunt folosite DOAR pentru analiza demo (nu se salvează).
+
+export const DEMO_BET_TEXT = [
+  'Hurkacz vs Griekspoor | Handicap seturi: Griekspoor +1.5 | 1.85 | tenis',
+  'Hurkacz vs Griekspoor | Total game-uri: Peste 22.5 | 1.90 | tenis',
+  'Alcaraz vs Shelton | Final: Alcaraz | 1.55 | tenis',
+  'Rybakina vs Ostapenko | Handicap seturi: Ostapenko +1.5 | 1.80 | tenis',
+  'Mexic vs Honduras | Under 2.5 Goluri | 1.85 | fotbal',
+  'Brazilia vs Coreea de Sud | GG NU | 2.10 | fotbal',
+].join('\n')
+
+export const DEMO_TEAM_STATS = {
+  mexic: { golFor: 1.25, golAg: 1.0, xgFor: 1.2, xgAg: 1.05, cornFor: 5.2, cornAg: 4.4, sotFor: 4.3, sotAg: 3.9 },
+  honduras: { golFor: 0.85, golAg: 1.45, xgFor: 0.9, xgAg: 1.4, cornFor: 3.6, cornAg: 5.1, sotFor: 3.1, sotAg: 4.6 },
+  brazilia: { golFor: 2.05, golAg: 0.75, xgFor: 1.95, xgAg: 0.85, cornFor: 6.4, cornAg: 3.5, sotFor: 6.1, sotAg: 3.2 },
+  'coreea de sud': { golFor: 1.15, golAg: 1.2, xgFor: 1.1, xgAg: 1.25, cornFor: 4.6, cornAg: 4.8, sotFor: 4.0, sotAg: 4.3 },
 }

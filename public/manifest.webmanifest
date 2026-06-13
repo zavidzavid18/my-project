@@ -1,0 +1,19 @@
+{
+  "name": "Analizor & Tracker Pariuri",
+  "short_name": "Analizor",
+  "description": "Analiză +EV, bilete active cu verificare automată a rezultatelor și istoric cu bankroll — WC 2026, tenis pe iarbă, baschet, baseball.",
+  "lang": "ro",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#020617",
+  "theme_color": "#020617",
+  "icons": [
+    {
+      "src": "favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

@@ -1,975 +1,93 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  COTA_MINIMA,
   analyzeSelection,
   applyResultsToBet,
   buildSuggestions,
+  DEMO_BET_TEXT,
+  DEMO_TEAM_STATS,
   detectTicketMeta,
   RATE_LIMIT,
   fetchScoreOnline,
   fetchUpcomingMatches,
-  parseTeamStats,
   statsKeyFor,
   parseRawText,
   parseResults,
   selectionOutcome,
-  settleSelection,
   splitMatch,
-} from './engine.js'
+} from './lib/engine.js'
+import {
+  currentBankroll,
+  DEFAULT_BANKROLL_START,
+  DEFAULT_KELLY_DIVISOR,
+  pendingStake,
+} from './lib/bankroll.js'
+import { isValidBet, sanitizeSettings, sanitizeTeamStats } from './lib/backup.js'
+import { useLocalStorage } from './hooks/useLocalStorage.js'
+import { useToasts } from './hooks/useToasts.js'
+import { Card, EmptyState, ToastHost } from './components/ui.jsx'
+import { ImportZone } from './components/analysis/ImportZone.jsx'
+import { TicketBanner } from './components/analysis/TicketBanner.jsx'
+import { AnalysisTable } from './components/analysis/AnalysisTable.jsx'
+import { TicketBuilder } from './components/analysis/TicketBuilder.jsx'
+import { Suggestions } from './components/analysis/Suggestions.jsx'
+import { ActiveBets } from './components/bets/ActiveBets.jsx'
+import { BetCard } from './components/bets/BetCard.jsx'
+import { StatsBar } from './components/history/StatsBar.jsx'
+import { Breakdowns } from './components/history/Breakdowns.jsx'
+import { CalendarView } from './components/history/CalendarView.jsx'
+import { TeamStatsPanel } from './components/stats/TeamStatsPanel.jsx'
+import { SettingsPanel } from './components/settings/SettingsPanel.jsx'
+import { filterByPeriod } from './lib/stats.js'
 
-const APP_VERSION = 'v5.3'
+const APP_VERSION = 'v6.2'
 const SETTINGS_KEY = 'betting-analyzer-settings'
+const STORAGE_KEY = 'betting-analyzer-history'
+const TEAM_STATS_KEY = 'analyzer-team-stats'
+const AUTO_VERIFY_MS = 3 * 60 * 1000
 
-const loadSettings = () => {
-  try {
-    return JSON.parse(localStorage.getItem(SETTINGS_KEY)) ?? {}
-  } catch {
-    return {}
-  }
-}
-
-const fmtPct = (p) => `${(p * 100).toFixed(1)}%`
-const fmtOdd = (o) => o.toFixed(2)
-
-const STATUS_STYLES = {
-  'În așteptare': 'bg-amber-500/10 text-amber-400 border-amber-500/30',
-  'Câștigat': 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
-  'Pierdut': 'bg-rose-500/10 text-rose-400 border-rose-500/30',
-}
-
-function Card({ title, icon, children, accent = 'border-slate-800' }) {
-  return (
-    <section className={`rounded-2xl border ${accent} bg-slate-900/70 shadow-xl shadow-black/30 backdrop-blur p-5`}>
-      <h2 className="mb-4 flex items-center gap-2 text-lg font-semibold tracking-tight text-slate-100">
-        <span>{icon}</span> {title}
-      </h2>
-      {children}
-    </section>
-  )
-}
-
-function VerdictBadge({ verdict }) {
-  return verdict === '+EV' ? (
-    <span className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-0.5 text-xs font-bold text-emerald-400">
-      +EV
-    </span>
-  ) : (
-    <span className="rounded-full border border-rose-500/40 bg-rose-500/10 px-2.5 py-0.5 text-xs font-bold text-rose-400">
-      PASS
-    </span>
-  )
-}
-
-const SPORT_LABELS = {
-  fotbal: '⚽ WC 2026',
-  tenis: '🎾 Tenis',
-  baschet: '🏀 Baschet',
-  baseball: '⚾ Baseball',
-}
-
-function SportTag({ sport }) {
-  return (
-    <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-slate-400">
-      {SPORT_LABELS[sport] ?? sport}
-    </span>
-  )
-}
-
-// Linkuri rapide de cercetare pentru un meci (părerile oamenilor + video)
-function ResearchLinks({ match, compact = false }) {
-  const q = encodeURIComponent(match)
-  const links = [
-    { label: '🔎 Reddit', href: `https://www.reddit.com/search/?q=${encodeURIComponent(match + ' prediction')}` },
-    { label: '▶️ YouTube', href: `https://www.youtube.com/results?search_query=${q}` },
-    { label: '🌐 Google', href: `https://www.google.com/search?q=${encodeURIComponent(match + ' statistici meci')}` },
-  ]
-  return (
-    <span className={compact ? 'inline-flex gap-1' : 'inline-flex flex-wrap gap-1.5'}>
-      {links.map((l) => (
-        <a
-          key={l.label}
-          href={l.href}
-          target="_blank"
-          rel="noreferrer"
-          className={
-            compact
-              ? 'rounded px-1 text-[10px] text-slate-500 transition hover:bg-slate-800 hover:text-slate-200'
-              : 'rounded-lg border border-slate-700 px-2 py-0.5 text-[11px] font-semibold text-slate-400 transition hover:bg-slate-800 hover:text-slate-200'
-          }
-          title={`Caută „${match}" pe ${l.label.slice(2).trim()}`}
-        >
-          {compact ? l.label.slice(0, 2) : l.label}
-        </a>
-      ))}
-    </span>
-  )
-}
-
-// ─── Zona de Import ──────────────────────────────────────────────────────────
-
-function ImportZone({ rawText, setRawText, onProcess, onLoadReal, loadingReal, importMsg }) {
-  return (
-    <Card title="Zona de Import" icon="📥">
-      <p className="mb-2 text-xs text-slate-400">
-        Acceptă: <code className="rounded bg-slate-800 px-1 text-slate-300">Echipa1 vs Echipa2 | Piață | Cotă | sport</code>,
-        {' '}bilete copiate din <span className="font-semibold text-slate-300">Betano</span> sau liste din{' '}
-        <span className="font-semibold text-slate-300">Superbet</span> (lipește direct, exact cum apar).
-        Sporturi: fotbal, tenis, baschet, baseball.
-      </p>
-      <textarea
-        value={rawText}
-        onChange={(e) => setRawText(e.target.value)}
-        rows={9}
-        spellCheck={false}
-        className="w-full resize-y rounded-xl border border-slate-700 bg-slate-950 p-3 font-mono text-xs text-slate-200 outline-none transition focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
-        placeholder="Lipește aici meciurile și cotele tale..."
-      />
-      <div className="mt-3 flex gap-2">
-        <button
-          onClick={onProcess}
-          className="flex-1 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 px-4 py-2.5 font-semibold text-white shadow-lg shadow-emerald-900/40 transition hover:from-emerald-500 hover:to-emerald-400 active:scale-[0.98]"
-        >
-          ⚡ Procesează
-        </button>
-        <button
-          onClick={onLoadReal}
-          disabled={loadingReal}
-          title="Încarcă următoarele meciuri oficiale din WC 2026 (cotele sunt orientative — pune-le pe cele de la Betano)"
-          className="rounded-xl bg-gradient-to-r from-sky-600 to-sky-500 px-4 py-2.5 font-semibold text-white shadow-lg shadow-sky-900/40 transition hover:from-sky-500 hover:to-sky-400 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          {loadingReal ? '⏳ Încarc...' : '📡 Meciuri reale'}
-        </button>
-      </div>
-      {importMsg && <p className="mt-2 text-xs text-slate-400">{importMsg}</p>}
-    </Card>
-  )
-}
-
-// ─── Bilet finalizat detectat în paste ───────────────────────────────────────
-
-function TicketBanner({ meta, analyzed, onImport }) {
-  const [miza, setMiza] = useState(meta?.stake ?? 50)
-  const [status, setStatus] = useState(meta?.status ?? 'În așteptare')
-  useEffect(() => {
-    setMiza(meta?.stake ?? 50)
-    setStatus(meta?.status ?? 'În așteptare')
-  }, [meta])
-
-  if (analyzed.length === 0) return null
-  // lista mare de cote din ofertă nu e un bilet — bannerul apare doar la
-  // bilete reale (meta detectat) sau la selecții puține
-  if (!meta && analyzed.length > 20) return null
-
-  const cotaTotala = meta?.totalOdds ?? analyzed.reduce((a, s) => a * s.odds, 1)
-  return (
-    <div className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4">
-      <div className="mb-3 text-sm text-slate-300">
-        🎫 <span className="font-semibold">Bilet pregătit:</span> {analyzed.length} selecții
-        {' '}· cotă totală <span className="font-mono font-bold text-slate-100">@{cotaTotala.toFixed(2)}</span>
-        {' '}· câștig potențial{' '}
-        <span className="font-mono font-bold text-amber-400">{(miza * cotaTotala).toFixed(2)} RON</span>
-      </div>
-      <div className="flex flex-wrap items-end gap-3">
-        <label className="text-xs text-slate-400">
-          Miză (RON)
-          <input
-            type="number"
-            min="1"
-            value={miza}
-            onChange={(e) => setMiza(Math.max(1, Number(e.target.value) || 1))}
-            className="mt-1 block w-24 rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 font-mono text-sm text-slate-200 outline-none focus:border-amber-500"
-          />
-        </label>
-        <label className="text-xs text-slate-400">
-          Status
-          <select
-            value={status}
-            onChange={(e) => setStatus(e.target.value)}
-            className={`mt-1 block rounded-lg border bg-slate-950 px-2 py-1.5 text-sm font-semibold outline-none ${STATUS_STYLES[status]}`}
-          >
-            <option>În așteptare</option>
-            <option>Câștigat</option>
-            <option>Pierdut</option>
-          </select>
-        </label>
-        <button
-          onClick={() => onImport(miza, status, cotaTotala)}
-          className="rounded-lg bg-amber-600/90 px-4 py-2 text-sm font-semibold text-white transition hover:bg-amber-500 active:scale-95"
-        >
-          💾 Salvează biletul
-        </button>
-      </div>
-    </div>
-  )
-}
-
-// ─── Motorul de Analiză ──────────────────────────────────────────────────────
-
-function AnalysisEngine({ analyzed }) {
-  const [expanded, setExpanded] = useState(null)
-  const [showAll, setShowAll] = useState(false)
-  const evCount = analyzed.filter((s) => s.verdict === '+EV').length
-  const isHuge = analyzed.length > 50
-  const visible = (isHuge && !showAll ? analyzed.filter((s) => s.verdict === '+EV') : analyzed).slice(0, 300)
-  return (
-    <Card title="Motorul de Analiză" icon="🧠">
-      {isHuge && (
-        <div className="mb-3 flex flex-wrap items-center gap-3 text-xs text-slate-400">
-          <span>
-            <span className="font-mono font-bold text-slate-100">{analyzed.length}</span> selecții procesate ·{' '}
-            <span className="font-mono font-bold text-emerald-400">{evCount}</span> +EV
-          </span>
-          <button
-            onClick={() => setShowAll(!showAll)}
-            className="rounded-lg border border-slate-700 px-2 py-1 font-semibold text-slate-300 transition hover:bg-slate-800"
-          >
-            {showAll ? '✅ Arată doar +EV' : `📋 Arată toate (${analyzed.length})`}
-          </button>
-          {visible.length === 300 && <span className="text-slate-500">(afișate primele 300)</span>}
-        </div>
-      )}
-      {analyzed.length === 0 ? (
-        <p className="text-sm text-slate-500">Nicio selecție procesată. Lipește textul și apasă „Procesează".</p>
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm">
-            <thead>
-              <tr className="border-b border-slate-800 text-xs uppercase tracking-wider text-slate-500">
-                <th className="pb-2 pr-3">Meci / Piață</th>
-                <th className="pb-2 pr-3">Cotă</th>
-                <th className="pb-2 pr-3">Prob. Model</th>
-                <th className="pb-2 pr-3">Motor</th>
-                <th className="pb-2">Verdict</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visible.map((s) => (
-                <SelectionRow
-                  key={s.id}
-                  s={s}
-                  expanded={expanded === s.id}
-                  onToggle={() => setExpanded(expanded === s.id ? null : s.id)}
-                />
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </Card>
-  )
-}
-
-function SelectionRow({ s, expanded, onToggle }) {
-  return (
-    <>
-      <tr
-        onClick={onToggle}
-        className="cursor-pointer border-b border-slate-800/60 transition hover:bg-slate-800/40"
-      >
-        <td className="py-2.5 pr-3">
-          <div className="font-medium text-slate-200">{s.match}</div>
-          <div className="flex items-center gap-2 text-xs text-slate-400">
-            {s.market} <SportTag sport={s.sport} />
-          </div>
-        </td>
-        <td className={`py-2.5 pr-3 font-mono font-semibold ${s.odds >= COTA_MINIMA ? 'text-slate-200' : 'text-rose-400'}`}>
-          {fmtOdd(s.odds)}
-        </td>
-        <td className="py-2.5 pr-3">
-          <span className={`font-mono ${s.modelProb >= 0.45 ? 'text-emerald-400' : 'text-amber-400'}`}>
-            {fmtPct(s.modelProb)}
-          </span>
-          <span className="ml-1 text-xs text-slate-500">(impl. {fmtPct(s.implied)})</span>
-        </td>
-        <td className="py-2.5 pr-3 text-xs text-slate-400">{s.engine}</td>
-        <td className="py-2.5"><VerdictBadge verdict={s.verdict} /></td>
-      </tr>
-      {expanded && (
-        <tr className="border-b border-slate-800/60 bg-slate-950/60">
-          <td colSpan={5} className="px-3 py-2">
-            <ul className="list-disc space-y-0.5 pl-5 text-xs text-slate-400">
-              {s.reasons.map((r, i) => <li key={i}>{r}</li>)}
-            </ul>
-            <div className="mt-2 pl-5">
-              <span className="mr-2 text-[11px] text-slate-500">Cercetează:</span>
-              <ResearchLinks match={s.match} />
-            </div>
-          </td>
-        </tr>
-      )}
-    </>
-  )
-}
-
-// ─── Sugestii Bilete ─────────────────────────────────────────────────────────
-
-function ParlayCard({ name, icon, parlay, stake, onConfirm, emptyMsg }) {
-  if (!parlay) {
-    return (
-      <div className="rounded-xl border border-dashed border-slate-700 p-4 text-sm text-slate-500">
-        <span className="font-semibold text-slate-400">{icon} {name}:</span> {emptyMsg}
-      </div>
-    )
-  }
-  return (
-    <div className="rounded-xl border border-slate-700 bg-slate-950/60 p-4">
-      <div className="mb-2 flex items-center justify-between">
-        <h3 className="font-semibold text-slate-100">{icon} {name}</h3>
-        <div className="text-right text-xs">
-          <div className="font-mono text-base font-bold text-emerald-400">@{fmtOdd(parlay.cotaTotala)}</div>
-          <div className="text-slate-400">șansă model: {fmtPct(parlay.probTotala)}</div>
-        </div>
-      </div>
-      <ul className="mb-3 space-y-1 text-xs text-slate-300">
-        {parlay.selections.map((s) => (
-          <li key={s.id} className="flex justify-between gap-2 border-b border-slate-800/60 pb-1">
-            <span>{s.match} — <span className="text-slate-400">{s.market}</span></span>
-            <span className="font-mono text-slate-200">{fmtOdd(s.odds)}</span>
-          </li>
-        ))}
-      </ul>
-      <div className="flex items-center justify-between text-xs text-slate-400">
-        <span>Câștig potențial: <span className="font-mono text-emerald-400">{(stake * parlay.cotaTotala).toFixed(2)} RON</span></span>
-        <button
-          onClick={onConfirm}
-          className="rounded-lg bg-emerald-600/90 px-3 py-1.5 font-semibold text-white transition hover:bg-emerald-500 active:scale-95"
-        >
-          ✓ Confirmă biletul
-        </button>
-      </div>
-    </div>
-  )
-}
-
-function Suggestions({ suggestions, stake, setStake, onConfirm }) {
-  const { evCount, sigur, cotaMare, single } = suggestions
-  return (
-    <Card title="Sugestii Bilete" icon="🎯" accent="border-emerald-900/60">
-      <div className="mb-4 flex items-center justify-between text-sm">
-        <span className="text-slate-400">
-          Selecții <span className="font-bold text-emerald-400">+EV</span> disponibile:{' '}
-          <span className="font-mono font-bold text-slate-100">{evCount}</span>
-        </span>
-        <label className="flex items-center gap-2 text-xs text-slate-400">
-          Miză (RON)
-          <input
-            type="number"
-            min="1"
-            value={stake}
-            onChange={(e) => setStake(Math.max(1, Number(e.target.value) || 1))}
-            className="w-20 rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 font-mono text-slate-200 outline-none focus:border-emerald-500"
-          />
-        </label>
-      </div>
-      <div className="space-y-3">
-        <ParlayCard
-          name="Biletul Sigur" icon="🛡️" parlay={sigur} stake={stake}
-          onConfirm={() => onConfirm('Biletul Sigur', sigur)}
-          emptyMsg="sunt necesare minim 2 selecții +EV."
-        />
-        <ParlayCard
-          name="Biletul Cota Mare" icon="🚀" parlay={cotaMare} stake={stake}
-          onConfirm={() => onConfirm('Biletul Cota Mare', cotaMare)}
-          emptyMsg="sunt necesare minim 5 selecții +EV."
-        />
-        <div className="rounded-xl border border-slate-700 bg-slate-950/60 p-4">
-          <h3 className="mb-2 font-semibold text-slate-100">🎯 Pariuri Single (top valoare)</h3>
-          {single.length === 0 ? (
-            <p className="text-sm text-slate-500">Nicio selecție +EV momentan.</p>
-          ) : (
-            <ul className="space-y-2">
-              {single.map((s) => (
-                <li key={s.id} className="flex items-center justify-between gap-2 text-xs">
-                  <span className="text-slate-300">
-                    {s.match} — <span className="text-slate-400">{s.market}</span>
-                    <span className="ml-2 font-mono text-emerald-400">EV +{(s.ev * 100).toFixed(1)}%</span>
-                    <span
-                      className="ml-2 font-mono text-violet-300"
-                      title="Criteriul Kelly: procentul din bancă justificat matematic pentru acest pariu"
-                    >
-                      Kelly {Math.max(0, ((s.modelProb * s.odds - 1) / (s.odds - 1)) * 100).toFixed(1)}%
-                    </span>
-                  </span>
-                  <span className="flex items-center gap-2">
-                    <span className="font-mono font-semibold text-slate-200">{fmtOdd(s.odds)}</span>
-                    <button
-                      onClick={() => onConfirm('Single', { selections: [s], cotaTotala: s.odds, probTotala: s.modelProb })}
-                      className="rounded-lg border border-emerald-700 px-2 py-1 font-semibold text-emerald-400 transition hover:bg-emerald-600 hover:text-white active:scale-95"
-                    >
-                      + Salvează
-                    </button>
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </div>
-    </Card>
-  )
-}
-
-// ─── Setări (chei API, salvate doar în browser) ──────────────────────────────
-
-function SettingsPanel({ settings, onSave, bets, onImportBets }) {
-  const [apiFootballKey, setApiFootballKey] = useState(settings.apiFootballKey ?? '')
-  const [saved, setSaved] = useState(false)
-  return (
-    <Card title="Setări API" icon="⚙️">
-      <p className="mb-3 text-xs text-slate-500">Cheile rămân doar în browserul tău — nu sunt trimise nicăieri altundeva.</p>
-      <label className="block max-w-md text-xs text-slate-400">
-        Cheie API-Football (rezultate fotbal extinse) — gratuit de la dashboard.api-football.com
-        <input
-          type="password"
-          value={apiFootballKey}
-          onChange={(e) => setApiFootballKey(e.target.value)}
-          placeholder="opțional"
-          className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 font-mono text-xs text-slate-200 outline-none focus:border-emerald-500"
-        />
-      </label>
-      <button
-        onClick={() => { onSave({ apiFootballKey: apiFootballKey.trim() }); setSaved(true); setTimeout(() => setSaved(false), 2000) }}
-        className="mt-3 rounded-lg bg-slate-700 px-3 py-1.5 text-sm font-semibold text-white transition hover:bg-slate-600 active:scale-95"
-      >
-        {saved ? '✓ Salvat' : '💾 Salvează setările'}
-      </button>
-      <div className="mt-5 border-t border-slate-800 pt-4">
-        <p className="mb-2 text-xs text-slate-500">
-          Biletele tale există doar în acest browser. Fă-ți un backup ca să nu le pierzi
-          (sau ca să le muți pe alt dispozitiv):
-        </p>
-        <div className="flex flex-wrap gap-2">
-          <button
-            onClick={() => {
-              const blob = new Blob([JSON.stringify(bets, null, 2)], { type: 'application/json' })
-              const a = document.createElement('a')
-              a.href = URL.createObjectURL(blob)
-              a.download = `bilete-${new Date().toISOString().slice(0, 10)}.json`
-              a.click()
-              URL.revokeObjectURL(a.href)
-            }}
-            className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-semibold text-slate-300 transition hover:bg-slate-800"
-          >
-            ⬇️ Exportă biletele ({bets.length})
-          </button>
-          <label className="cursor-pointer rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-semibold text-slate-300 transition hover:bg-slate-800">
-            ⬆️ Importă din backup
-            <input
-              type="file"
-              accept=".json,application/json"
-              className="hidden"
-              onChange={(e) => {
-                const file = e.target.files?.[0]
-                if (!file) return
-                const reader = new FileReader()
-                reader.onload = () => {
-                  try {
-                    const data = JSON.parse(reader.result)
-                    if (Array.isArray(data)) onImportBets(data)
-                  } catch { /* fișier invalid — ignorat */ }
-                }
-                reader.readAsText(file)
-                e.target.value = ''
-              }}
-            />
-          </label>
-        </div>
-      </div>
-    </Card>
-  )
-}
-
-// ─── Statistici Echipe (stil PlayerStats) ───────────────────────────────────
-
-const STAT_COLS = [
-  { key: 'gol', label: 'Goluri' },
-  { key: 'xg', label: 'xG' },
-  { key: 'corn', label: 'Cornere' },
-  { key: 'sot', label: 'Șuturi pe poartă' },
-  { key: 'sav', label: 'Salvări' },
-  { key: 'pos', label: 'Posesie', percent: true },
+const PERIODS = [
+  { days: 7, label: '7 zile' },
+  { days: 30, label: '30 zile' },
+  { days: null, label: 'Tot' },
 ]
 
-function TeamStatsPanel({ teamStats, onAdd, onDelete }) {
-  const [raw, setRaw] = useState('')
-  const [msg, setMsg] = useState('')
-  const teams = Object.entries(teamStats)
-  return (
-    <div className="space-y-5">
-      <Card title="Adaugă Statistici Echipe" icon="📈" accent="border-violet-900/60">
-        <p className="mb-2 text-xs text-slate-400">
-          Copiază tabelul de statistici al unei echipe (ex. de pe <span className="font-semibold text-slate-300">PlayerStats</span>:
-          selectezi tot, de la „Echipa Stats" în jos, Ctrl+C) și lipește-l aici. Rețin mediile —
-          <span className="text-violet-300"> numărul mare = al echipei</span>, <span className="text-slate-300">cel mic = al adversarilor</span> —
-          iar analiza fotbal trece automat pe <span className="font-semibold text-violet-300">modelul Poisson cu date reale</span>.
-        </p>
-        <textarea
-          value={raw}
-          onChange={(e) => setRaw(e.target.value)}
-          rows={6}
-          spellCheck={false}
-          placeholder={'Paraguay Stats\nGoals  0.86  1.03 ...\nExpected Goals (xG)  1.07  0.98 ...\nCorners  3.97  4.45 ...'}
-          className="w-full resize-y rounded-xl border border-slate-700 bg-slate-950 p-3 font-mono text-xs text-slate-200 outline-none transition focus:border-violet-500"
-        />
-        <button
-          onClick={() => {
-            const parsed = parseTeamStats(raw)
-            if (parsed.length === 0) { setMsg('⚠️ Nu am găsit niciun „Echipă Stats" cu indicatori în text.'); return }
-            onAdd(parsed)
-            setRaw('')
-            setMsg(`✅ Salvat: ${parsed.map((t) => t.team).join(', ')}`)
-          }}
-          className="mt-3 rounded-xl bg-gradient-to-r from-violet-600 to-violet-500 px-4 py-2.5 font-semibold text-white shadow-lg shadow-violet-900/40 transition hover:from-violet-500 hover:to-violet-400 active:scale-[0.98]"
-        >
-          📈 Salvează statisticile
-        </button>
-        {msg && <p className="mt-2 text-xs text-slate-400">{msg}</p>}
-      </Card>
-
-      <Card title={`Echipe cu statistici (${teams.length})`} icon="🗂️">
-        {teams.length === 0 ? (
-          <p className="text-sm text-slate-500">Nicio echipă încă. Lipește un tabel mai sus — apoi orice meci dintre echipe cunoscute se analizează cu date reale.</p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
-              <thead>
-                <tr className="border-b border-slate-800 text-xs uppercase tracking-wider text-slate-500">
-                  <th className="pb-2 pr-3">Echipă</th>
-                  {STAT_COLS.map((c) => <th key={c.key} className="pb-2 pr-3">{c.label}</th>)}
-                  <th className="pb-2"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {teams.map(([key, t]) => (
-                  <tr key={key} className="border-b border-slate-800/60 transition hover:bg-slate-800/30">
-                    <td className="py-2.5 pr-3 font-semibold capitalize text-slate-200">{t.team ?? key}</td>
-                    {STAT_COLS.map((c) => {
-                      const f = t.stats[`${c.key}For`]
-                      const a = t.stats[`${c.key}Ag`]
-                      const fmt = (v) => (v == null ? '—' : c.percent ? `${Math.round(v * 100)}%` : v.toFixed(2))
-                      return (
-                        <td key={c.key} className="py-2.5 pr-3">
-                          <span className="font-mono text-base font-bold text-violet-300">{fmt(f)}</span>
-                          {a != null && <span className="ml-1 align-bottom font-mono text-[10px] text-slate-500">{fmt(a)}</span>}
-                        </td>
-                      )
-                    })}
-                    <td className="py-2.5 text-right">
-                      <button
-                        onClick={() => onDelete(key)}
-                        className="rounded-lg px-2 py-1 text-xs text-slate-500 transition hover:bg-rose-500/10 hover:text-rose-400"
-                      >
-                        ✕
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Card>
-    </div>
-  )
-}
-
-// ─── Statistici (stil Pikkit) ────────────────────────────────────────────────
-
-const betProfit = (b) =>
-  b.status === 'Câștigat' ? b.miza * (b.cotaTotala - 1) : b.status === 'Pierdut' ? -b.miza : 0
-
-function StatTile({ label, value, accent = 'text-slate-100' }) {
-  return (
-    <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
-      <div className="text-[11px] uppercase tracking-wider text-slate-500">{label}</div>
-      <div className={`mt-0.5 font-mono text-lg font-bold ${accent}`}>{value}</div>
-    </div>
-  )
-}
-
-function ProfitChart({ bets }) {
-  const settled = [...bets].reverse().filter((b) => b.status !== 'În așteptare')
-  if (settled.length < 2) return null
-  let acc = 0
-  const pts = [0, ...settled.map((b) => (acc += betProfit(b)))]
-  const min = Math.min(...pts, 0)
-  const max = Math.max(...pts, 0)
-  const range = max - min || 1
-  const W = 600
-  const H = 80
-  const x = (i) => (i / (pts.length - 1)) * W
-  const y = (p) => H - ((p - min) / range) * H
-  const path = pts.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p).toFixed(1)}`).join(' ')
-  const last = pts[pts.length - 1]
-  return (
-    <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
-      <div className="mb-1 text-[11px] uppercase tracking-wider text-slate-500">Evoluție bankroll</div>
-      <svg viewBox={`0 0 ${W} ${H}`} className="h-20 w-full" preserveAspectRatio="none">
-        <line x1="0" y1={y(0)} x2={W} y2={y(0)} stroke="#334155" strokeDasharray="4 4" strokeWidth="1" />
-        <path d={path} fill="none" stroke={last >= 0 ? '#34d399' : '#fb7185'} strokeWidth="2.5" strokeLinejoin="round" />
-      </svg>
-    </div>
-  )
-}
-
-function StatsBar({ bets }) {
-  const settled = bets.filter((b) => b.status !== 'În așteptare')
-  const won = bets.filter((b) => b.status === 'Câștigat')
-  const lost = bets.filter((b) => b.status === 'Pierdut')
-  const pending = bets.length - settled.length
-  const staked = settled.reduce((a, b) => a + b.miza, 0)
-  const profit = bets.reduce((a, b) => a + betProfit(b), 0)
-  const roi = staked ? (profit / staked) * 100 : 0
-  const winRate = settled.length ? (won.length / settled.length) * 100 : 0
-  return (
-    <div className="space-y-3">
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-        <StatTile
-          label="Profit net"
-          value={`${profit >= 0 ? '+' : ''}${profit.toFixed(2)} RON`}
-          accent={profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}
-        />
-        <StatTile
-          label="ROI"
-          value={`${roi >= 0 ? '+' : ''}${roi.toFixed(1)}%`}
-          accent={roi >= 0 ? 'text-emerald-400' : 'text-rose-400'}
-        />
-        <StatTile label="Rată câștig" value={`${winRate.toFixed(0)}%`} />
-        <StatTile label="Record" value={`${won.length}W - ${lost.length}L - ${pending}P`} />
-        <StatTile label="Miză decisă" value={`${staked.toFixed(0)} RON`} />
-      </div>
-      <ProfitChart bets={bets} />
-    </div>
-  )
-}
-
-// ─── Calendar lunar (stil Pikkit) ────────────────────────────────────────────
-
-const MONTH_NAMES = ['Ianuarie', 'Februarie', 'Martie', 'Aprilie', 'Mai', 'Iunie', 'Iulie', 'August', 'Septembrie', 'Octombrie', 'Noiembrie', 'Decembrie']
-
-const parseBetDate = (b) => {
-  if (b.ts) return new Date(b.ts)
-  const m = (b.data ?? '').match(/(\d{2})\.(\d{2})\.(\d{4})/)
-  return m ? new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1])) : null
-}
-
-function CalendarView({ bets }) {
-  const [month, setMonth] = useState(() => {
-    const now = new Date()
-    return new Date(now.getFullYear(), now.getMonth(), 1)
-  })
-
-  const days = {}
-  for (const b of bets) {
-    const d = parseBetDate(b)
-    if (!d || d.getFullYear() !== month.getFullYear() || d.getMonth() !== month.getMonth()) continue
-    const day = d.getDate()
-    days[day] ??= { profit: 0, pending: 0, settled: 0 }
-    if (b.status === 'În așteptare') days[day].pending += 1
-    else {
-      days[day].settled += 1
-      days[day].profit += betProfit(b)
-    }
-  }
-  const monthProfit = Object.values(days).reduce((a, d) => a + d.profit, 0)
-  const daysInMonth = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate()
-  const firstDow = new Date(month.getFullYear(), month.getMonth(), 1).getDay() // 0 = duminică
-  const shift = (delta) => setMonth(new Date(month.getFullYear(), month.getMonth() + delta, 1))
-
-  const tile = (day) => {
-    const d = days[day]
-    if (!d) return { cls: 'bg-slate-900/60 text-slate-600', label: '' }
-    if (d.settled === 0) return { cls: 'bg-sky-500/15 text-sky-300 border border-sky-500/20', label: `${d.pending} act.` }
-    const p = d.profit
-    return p >= 0
-      ? { cls: 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/20', label: `+${p.toFixed(0)}` }
-      : { cls: 'bg-rose-500/15 text-rose-400 border border-rose-500/20', label: p.toFixed(0) }
-  }
-
-  return (
-    <Card title="Calendar Profit" icon="📅">
-      <div className="mb-3 flex items-center justify-between">
-        <button onClick={() => shift(-1)} className="rounded-lg px-3 py-1 text-slate-400 transition hover:bg-slate-800 hover:text-slate-200">‹</button>
-        <div className="text-center">
-          <span className="text-lg font-bold text-slate-100">{MONTH_NAMES[month.getMonth()]} {month.getFullYear()}</span>
-          <span className={`ml-2 font-mono text-sm font-bold ${monthProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-            {monthProfit >= 0 ? '+' : ''}{monthProfit.toFixed(1)} RON
-          </span>
-        </div>
-        <button onClick={() => shift(1)} className="rounded-lg px-3 py-1 text-slate-400 transition hover:bg-slate-800 hover:text-slate-200">›</button>
-      </div>
-      <div className="grid grid-cols-7 gap-1.5 text-center">
-        {['D', 'L', 'Ma', 'Mi', 'J', 'V', 'S'].map((d, i) => (
-          <div key={i} className="pb-1 text-[10px] uppercase tracking-wider text-slate-500">{d}</div>
-        ))}
-        {Array.from({ length: firstDow }).map((_, i) => <div key={`e${i}`} />)}
-        {Array.from({ length: daysInMonth }).map((_, i) => {
-          const day = i + 1
-          const t = tile(day)
-          return (
-            <div key={day} className={`rounded-lg px-1 py-1.5 ${t.cls}`}>
-              <div className="text-[10px] opacity-60">{day}</div>
-              <div className="font-mono text-[11px] font-bold leading-tight">{t.label}</div>
-            </div>
-          )
-        })}
-      </div>
-    </Card>
-  )
-}
-
-// ─── Istoric Pariuri ─────────────────────────────────────────────────────────
-
-function BetCard({ bet, onStatusChange, onDelete, onReset, onLegMark }) {
-  const decided = bet.selections.filter((s) => selectionOutcome(s)).length
-  const hasAutoData = bet.selections.some((s) => s.score || s.liveScore) || bet.status !== 'În așteptare'
-  const profit = betProfit(bet)
-  const payout = bet.miza * bet.cotaTotala
-  return (
-    <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4 transition hover:border-slate-700">
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <span className={`rounded-full border px-2.5 py-0.5 text-xs font-bold ${STATUS_STYLES[bet.status]}`}>
-            {bet.status === 'Câștigat' ? '✓ Câștigat' : bet.status === 'Pierdut' ? '✗ Pierdut' : '⏳ În așteptare'}
-          </span>
-          <span className="text-sm font-semibold text-slate-200">{bet.tip}</span>
-          <span className="text-xs text-slate-500">{bet.data}</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <select
-            value={bet.status}
-            onChange={(e) => onStatusChange(bet.id, e.target.value)}
-            className={`rounded-lg border bg-slate-950 px-2 py-1 text-xs font-semibold outline-none ${STATUS_STYLES[bet.status]}`}
-          >
-            <option>În așteptare</option>
-            <option>Câștigat</option>
-            <option>Pierdut</option>
-          </select>
-          {onReset && hasAutoData && (
-            <button
-              onClick={() => onReset(bet.id)}
-              className="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-400 transition hover:bg-amber-500/10 hover:text-amber-400"
-              title="Date eronate? Șterge scorurile găsite automat și readu biletul În așteptare"
-            >
-              ↺ Resetează
-            </button>
-          )}
-          <button
-            onClick={() => onDelete(bet.id)}
-            className="rounded-lg px-2 py-1 text-xs text-slate-500 transition hover:bg-rose-500/10 hover:text-rose-400"
-            title="Șterge biletul"
-          >
-            ✕
-          </button>
-        </div>
-      </div>
-      <ul className="mb-3 space-y-1.5 border-l-2 border-slate-800 pl-3 text-xs text-slate-300">
-        {bet.selections.map((s) => {
-          const outcome = selectionOutcome(s)
-          return (
-            <li key={s.id} className="flex items-start gap-2">
-              {onLegMark ? (
-                <span className="flex shrink-0 gap-1">
-                  <button
-                    onClick={() => onLegMark(bet.id, s.id, s.manual === 'Câștigat' ? null : 'Câștigat')}
-                    title="Bifează: selecția a ieșit"
-                    className={`h-5 w-5 rounded-md text-[11px] font-bold leading-none transition active:scale-90 ${
-                      outcome === 'Câștigat'
-                        ? 'bg-emerald-500 text-white shadow shadow-emerald-900/50'
-                        : 'border border-slate-700 text-slate-500 hover:border-emerald-500 hover:text-emerald-400'
-                    }`}
-                  >
-                    ✓
-                  </button>
-                  <button
-                    onClick={() => onLegMark(bet.id, s.id, s.manual === 'Pierdut' ? null : 'Pierdut')}
-                    title="Bifează: selecția a picat"
-                    className={`h-5 w-5 rounded-md text-[11px] font-bold leading-none transition active:scale-90 ${
-                      outcome === 'Pierdut'
-                        ? 'bg-rose-500 text-white shadow shadow-rose-900/50'
-                        : 'border border-slate-700 text-slate-500 hover:border-rose-500 hover:text-rose-400'
-                    }`}
-                  >
-                    ✗
-                  </button>
-                </span>
-              ) : (
-                <span className="w-4 shrink-0">
-                  {outcome === 'Câștigat' ? '✅' : outcome === 'Pierdut' ? '❌' : '·'}
-                </span>
-              )}
-              <span>
-                {s.match} — <span className="text-slate-500">{s.market}</span>
-                {s.score && <span className="ml-1 font-mono text-slate-400">({s.score[0]}-{s.score[1]})</span>}
-                {!s.score && s.liveScore && (
-                  <span className="ml-1 animate-pulse font-mono text-xs font-bold text-rose-400">
-                    🔴 LIVE {s.liveScore[0]}-{s.liveScore[1]}
-                  </span>
-                )}
-                <span className="ml-1.5"><ResearchLinks match={s.match} compact /></span>
-              </span>
-            </li>
-          )
-        })}
-      </ul>
-      <div className="flex flex-wrap items-center gap-4 text-xs text-slate-400">
-        <span>Cotă <span className="font-mono font-semibold text-slate-200">@{fmtOdd(bet.cotaTotala)}</span></span>
-        <span>Miză <span className="font-mono text-slate-200">{bet.miza} RON</span></span>
-        {bet.status === 'În așteptare' ? (
-          <>
-            <span>Decise <span className="font-mono text-slate-200">{decided}/{bet.selections.length}</span></span>
-            <span>Plată potențială <span className="font-mono text-amber-400">{payout.toFixed(2)} RON</span></span>
-          </>
-        ) : (
-          <span>
-            Rezultat{' '}
-            <span className={`font-mono font-bold ${profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-              {profit >= 0 ? '+' : ''}{profit.toFixed(2)} RON
-            </span>
-          </span>
-        )}
-      </div>
-    </div>
-  )
-}
-
-const SORTS = {
-  recente: { label: 'Recente', fn: (a, b) => (b.ts ?? 0) - (a.ts ?? 0) },
-  miza: { label: 'Miză ↓', fn: (a, b) => b.miza - a.miza },
-  cota: { label: 'Cotă ↓', fn: (a, b) => b.cotaTotala - a.cotaTotala },
-  castig: { label: 'Câștig potențial ↓', fn: (a, b) => b.miza * b.cotaTotala - a.miza * a.cotaTotala },
-}
-
-function History({ bets, onStatusChange, onDelete, onReset, onLegMark, onValidate, onVerifyOnline, verifying, verifyMsg, title = 'Bilete Active', emptyMsg = 'Niciun bilet activ. Confirmă o sugestie sau importă un bilet din tabul Analiză.' }) {
-  const [resultsText, setResultsText] = useState('')
-  const [sortBy, setSortBy] = useState('recente')
-  const pendingCount = bets.filter((b) => b.status === 'În așteptare').length
-  const sorted = [...bets].sort(SORTS[sortBy].fn)
-
-  return (
-    <Card title={title} icon="📒">
-      <div className="mb-4 flex flex-wrap items-center gap-3">
-        <button
-          onClick={onVerifyOnline}
-          disabled={verifying || pendingCount === 0}
-          className="rounded-lg bg-gradient-to-r from-sky-600 to-sky-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-sky-900/40 transition hover:from-sky-500 hover:to-sky-400 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          {verifying ? '⏳ Caut rezultatele online...' : '🔍 Verifică rezultatele online'}
-        </button>
-        <span className="text-xs text-slate-400">
-          {verifyMsg || `${pendingCount} bilete în așteptare — caută automat scorurile finale pe TheSportsDB.`}
-        </span>
-      </div>
-      {bets.length > 1 && (
-        <div className="mb-3 flex flex-wrap items-center gap-1.5 text-xs">
-          <span className="mr-1 text-slate-500">Sortează:</span>
-          {Object.entries(SORTS).map(([id, s]) => (
-            <button
-              key={id}
-              onClick={() => setSortBy(id)}
-              className={`rounded-lg px-2.5 py-1 font-semibold transition ${
-                sortBy === id ? 'bg-emerald-600 text-white' : 'border border-slate-700 text-slate-400 hover:bg-slate-800'
-              }`}
-            >
-              {s.label}
-            </button>
-          ))}
-        </div>
-      )}
-      <details className="mb-4 rounded-xl border border-slate-800 bg-slate-950/60 p-3">
-        <summary className="cursor-pointer text-xs font-semibold text-slate-300">
-          ✍️ Validare manuală (dacă un meci nu e găsit online)
-        </summary>
-        <p className="mb-2 mt-2 text-xs text-slate-400">
-          Lipește rezultatele finale (ex: <code className="rounded bg-slate-800 px-1">Coreea de Sud - Cehia 2-1</code>, câte unul pe linie).
-        </p>
-        <div className="flex gap-2">
-          <textarea
-            value={resultsText}
-            onChange={(e) => setResultsText(e.target.value)}
-            rows={2}
-            spellCheck={false}
-            placeholder="Echipa1 - Echipa2 2-1"
-            className="flex-1 resize-y rounded-lg border border-slate-700 bg-slate-950 p-2 font-mono text-xs text-slate-200 outline-none focus:border-emerald-500"
-          />
-          <button
-            onClick={() => { onValidate(resultsText); setResultsText('') }}
-            className="self-end rounded-lg bg-emerald-700 px-3 py-2 text-sm font-semibold text-white transition hover:bg-emerald-600 active:scale-95"
-          >
-            🔄 Validează
-          </button>
-        </div>
-      </details>
-      {bets.length === 0 ? (
-        <p className="text-sm text-slate-500">{emptyMsg}</p>
-      ) : (
-        <div className="space-y-3">
-          {sorted.map((b) => (
-            <BetCard key={b.id} bet={b} onStatusChange={onStatusChange} onDelete={onDelete} onReset={onReset} onLegMark={onLegMark} />
-          ))}
-        </div>
-      )}
-    </Card>
-  )
-}
-
-// ─── App ─────────────────────────────────────────────────────────────────────
-
-const STORAGE_KEY = 'betting-analyzer-history'
+const newBet = (tip, selections, cotaTotala, miza, status = 'În așteptare') => ({
+  id: Date.now() + Math.random(),
+  ts: Date.now(),
+  data: new Date().toLocaleString('ro-RO', { dateStyle: 'short', timeStyle: 'short' }),
+  tip,
+  selections,
+  cotaTotala,
+  miza,
+  status,
+})
 
 export default function App() {
   const [rawText, setRawText] = useState('')
   const [analyzed, setAnalyzed] = useState([])
+  const [analysisKey, setAnalysisKey] = useState(0)
+  const [picked, setPicked] = useState([])
   const [tab, setTab] = useState('analiza')
   const [bannerDismissed, setBannerDismissed] = useState(false)
   const [ticketMeta, setTicketMeta] = useState(null)
   const [stake, setStake] = useState(100)
   const [verifying, setVerifying] = useState(false)
   const [verifyMsg, setVerifyMsg] = useState('')
+  const [lastVerifyAt, setLastVerifyAt] = useState(0)
   const [loadingReal, setLoadingReal] = useState(false)
   const [importMsg, setImportMsg] = useState('')
-  const [settings, setSettings] = useState(loadSettings)
-  const [teamStats, setTeamStats] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem('analyzer-team-stats')) ?? {}
-    } catch {
-      return {}
-    }
-  })
+  const [period, setPeriod] = useState(null)
 
-  useEffect(() => {
-    localStorage.setItem('analyzer-team-stats', JSON.stringify(teamStats))
-  }, [teamStats])
+  const [settings, setSettings] = useLocalStorage(SETTINGS_KEY, {})
+  const [teamStats, setTeamStats] = useLocalStorage(TEAM_STATS_KEY, {})
+  const [bets, setBets] = useLocalStorage(STORAGE_KEY, [])
+  const { toasts, push: pushToast, dismiss: dismissToast } = useToasts()
 
-  const handleAddStats = (parsed) =>
-    setTeamStats((prev) => {
-      const next = { ...prev }
-      for (const t of parsed) next[statsKeyFor(t.team)] = t
-      return next
-    })
-
-  const handleDeleteStats = (key) =>
-    setTeamStats((prev) => {
-      const next = { ...prev }
-      delete next[key]
-      return next
-    })
-
-  const handleSaveSettings = (next) => {
-    setSettings(next)
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(next))
-  }
-  const [bets, setBets] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem(STORAGE_KEY)) ?? []
-    } catch {
-      return []
-    }
-  })
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(bets))
-  }, [bets])
+  const bankrollStart = Number(settings.bankrollStart) > 0 ? Number(settings.bankrollStart) : DEFAULT_BANKROLL_START
+  const kellyDivisor = Number(settings.kellyDivisor) > 0 ? Number(settings.kellyDivisor) : DEFAULT_KELLY_DIVISOR
+  const bankNow = currentBankroll(bankrollStart, bets)
+  const bankDelta = bankNow - bankrollStart
+  const inPlay = pendingStake(bets)
 
   const suggestions = useMemo(() => buildSuggestions(analyzed), [analyzed])
 
@@ -979,10 +97,19 @@ export default function App() {
     return Object.keys(db).length ? db : null
   }, [teamStats])
 
+  const pickedSelections = useMemo(
+    () => analyzed.filter((s) => picked.includes(s.id)),
+    [analyzed, picked],
+  )
+
+  // ── Analiză ────────────────────────────────────────────────────────────────
+
   const handleProcess = () => {
     setAnalyzed(parseRawText(rawText).map((s) => analyzeSelection(s, statsDb)))
     setTicketMeta(detectTicketMeta(rawText))
     setBannerDismissed(false)
+    setPicked([])
+    setAnalysisKey((k) => k + 1)
   }
 
   const handleLoadReal = async () => {
@@ -994,6 +121,8 @@ export default function App() {
       setRawText(text)
       setAnalyzed(parseRawText(text).map((s) => analyzeSelection(s, statsDb)))
       setTicketMeta(null)
+      setPicked([])
+      setAnalysisKey((k) => k + 1)
       setImportMsg(`📡 ${lines.length} meciuri oficiale WC 2026 încărcate. Cotele sunt orientative — înlocuiește-le cu cele de pe Betano și apasă din nou Procesează.`)
     } catch (e) {
       setImportMsg(`⚠️ Nu am putut încărca programul (${e.message}). Încearcă din nou sau lipește manual.`)
@@ -1001,28 +130,66 @@ export default function App() {
     setLoadingReal(false)
   }
 
+  // încarcă meciuri demo (non-distructiv): statisticile WC demo sunt folosite
+  // DOAR pentru această analiză, nu se salvează în baza ta de statistici
+  const handleLoadDemo = () => {
+    const demoStatsDb = { ...DEMO_TEAM_STATS, ...(statsDb ?? {}) }
+    setRawText(DEMO_BET_TEXT)
+    setAnalyzed(parseRawText(DEMO_BET_TEXT).map((s) => analyzeSelection(s, demoStatsDb)))
+    setTicketMeta(null)
+    setBannerDismissed(true)
+    setPicked([])
+    setAnalysisKey((k) => k + 1)
+    setImportMsg('🎓 Exemple încărcate: tenis (Handicap seturi +1.5 · Total game-uri) + WC (Poisson). Bifează selecții ca să-ți faci bilet, sau apasă Procesează pe textul tău.')
+  }
+
+  const handleTogglePick = (id) =>
+    setPicked((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
+
+  // ── Salvare bilete ─────────────────────────────────────────────────────────
+
+  const savedToast = () =>
+    pushToast('🎫 Bilet salvat în Bilete Active.', {
+      type: 'success',
+      actionLabel: 'Vezi',
+      onAction: () => setTab('active'),
+    })
+
   const handleImportTicket = (miza, status, cotaTotala) => {
     if (analyzed.length === 0) return
-    const bet = {
-      id: Date.now() + Math.random(),
-      ts: Date.now(),
-      data: new Date().toLocaleString('ro-RO', { dateStyle: 'short', timeStyle: 'short' }),
-      tip: `Bilet importat (${analyzed.length} sel.)`,
-      selections: analyzed,
-      cotaTotala,
-      miza,
-      status,
-    }
+    const bet = newBet(`Bilet importat (${analyzed.length} sel.)`, analyzed, cotaTotala, miza, status)
     // scorurile deja prezente în paste pot decide biletul pe loc
     setBets((prev) => [applyResultsToBet(bet, []), ...prev])
     setBannerDismissed(true)
-    setTab('active')
+    savedToast()
   }
+
+  const handleConfirm = (tip, parlay) => {
+    setBets((prev) => [newBet(tip, parlay.selections, parlay.cotaTotala, stake), ...prev])
+    savedToast()
+  }
+
+  const handleSaveBuilder = (builderStake) => {
+    if (pickedSelections.length === 0) return
+    const cotaTotala = pickedSelections.reduce((a, s) => a * s.odds, 1)
+    setBets((prev) => [
+      newBet(`Biletul Meu (${pickedSelections.length} sel.)`, pickedSelections, cotaTotala, builderStake),
+      ...prev,
+    ])
+    setPicked([])
+    savedToast()
+  }
+
+  // ── Rezultate & validare ───────────────────────────────────────────────────
 
   const handleValidate = (text) => {
     const results = parseResults(text)
-    if (results.length === 0) return
+    if (results.length === 0) {
+      pushToast('⚠️ Niciun rezultat recunoscut — formatul e „Echipa1 - Echipa2 2-1".', { type: 'error' })
+      return
+    }
     setBets((prev) => prev.map((b) => applyResultsToBet(b, results)))
+    pushToast(`🔄 ${results.length} rezultate aplicate.`, { type: 'success' })
   }
 
   const lastVerifyRef = useRef(0)
@@ -1032,6 +199,7 @@ export default function App() {
     setVerifying(true)
     setVerifyMsg('')
     lastVerifyRef.current = Date.now()
+    setLastVerifyAt(lastVerifyRef.current)
     try {
       const pendingSels = []
       for (const b of bets) {
@@ -1042,9 +210,13 @@ export default function App() {
       }
       const results = []
       const liveScores = new Map()
+      // doar meciurile chiar interogate în această rundă pot avea scorul live
+      // șters — altfel un break la limita API ar pierde un LIVE valid de dinainte
+      const attempted = new Set()
       let notFound = 0
       let rateLimited = false
       for (const s of pendingSels) {
+        attempted.add(s.match)
         let r = null
         try {
           r = await fetchScoreOnline(s, { apiFootballKey: settings.apiFootballKey })
@@ -1065,7 +237,13 @@ export default function App() {
             ...b,
             selections: b.selections.map((s) => {
               const live = liveScores.get(s.match)
-              return live ? { ...s, liveScore: live } : s.liveScore && !liveScores.has(s.match) ? { ...s, liveScore: undefined } : s
+              if (live) return { ...s, liveScore: live }
+              // scorul live se curăță doar pentru meciuri interogate acum și
+              // care nu mai sunt LIVE (s-au încheiat sau nu mai apar)
+              if (s.liveScore && attempted.has(s.match) && !liveScores.has(s.match)) {
+                return { ...s, liveScore: undefined }
+              }
+              return s
             }),
           }
           return applyResultsToBet(withLive, results)
@@ -1077,6 +255,7 @@ export default function App() {
       if (notFound) parts.push(`⏳ ${notFound} negăsite (probabil nu au început)`)
       if (rateLimited) parts.push('🚦 limită API atinsă — restul se verifică la următoarea rundă')
       setVerifyMsg(parts.length ? `${parts.join(' · ')} — verificat la ${new Date().toLocaleTimeString('ro-RO', { hour: '2-digit', minute: '2-digit' })}.` : 'Niciun meci în așteptare de verificat.')
+      if (results.length) pushToast(`✅ ${results.length} rezultate finale găsite și aplicate.`, { type: 'success' })
     } catch (e) {
       setVerifyMsg(`⚠️ Eroare la căutarea online: ${e.message}. Folosește validarea manuală.`)
     }
@@ -1091,39 +270,29 @@ export default function App() {
   }
   useEffect(() => {
     if (tab !== 'active') return
-    if (Date.now() - lastVerifyRef.current > 3 * 60 * 1000) verifyFnRef.current()
-    const intervalId = setInterval(() => verifyFnRef.current(), 3 * 60 * 1000)
+    if (Date.now() - lastVerifyRef.current > AUTO_VERIFY_MS) verifyFnRef.current()
+    const intervalId = setInterval(() => verifyFnRef.current(), AUTO_VERIFY_MS)
     return () => clearInterval(intervalId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab])
 
-  const handleConfirm = (tip, parlay) => {
-    setBets((prev) => [
-      {
-        id: Date.now() + Math.random(),
-        ts: Date.now(),
-        data: new Date().toLocaleString('ro-RO', { dateStyle: 'short', timeStyle: 'short' }),
-        tip,
-        selections: parlay.selections,
-        cotaTotala: parlay.cotaTotala,
-        miza: stake,
-        status: 'În așteptare',
-      },
-      ...prev,
-    ])
-  }
+  // ── Gestionare bilete ──────────────────────────────────────────────────────
 
   const handleStatusChange = (id, status) =>
     setBets((prev) => prev.map((b) => (b.id === id ? { ...b, status } : b)))
 
-  const handleDelete = (id) => setBets((prev) => prev.filter((b) => b.id !== id))
-
-  const handleImportBets = (imported) =>
-    setBets((prev) => {
-      const known = new Set(prev.map((b) => b.id))
-      const fresh = imported.filter((b) => b && b.id != null && !known.has(b.id) && Array.isArray(b.selections))
-      return [...fresh, ...prev]
+  // ștergerea se poate anula din notificare — fără pierderi accidentale
+  const handleDelete = (id) => {
+    const bet = bets.find((b) => b.id === id)
+    if (!bet) return
+    setBets((prev) => prev.filter((b) => b.id !== id))
+    pushToast(`🗑️ Bilet șters (${bet.tip}, ${bet.miza} RON).`, {
+      actionLabel: 'Anulează',
+      onAction: () =>
+        setBets((prev) => (prev.some((b) => b.id === bet.id) ? prev : [bet, ...prev])),
+      ttl: 8000,
     })
+  }
 
   // bifă manuală pe o selecție: ✓ a ieșit / ✗ a picat; biletul se decide
   // singur când toate selecțiile au un rezultat
@@ -1156,8 +325,70 @@ export default function App() {
       ),
     )
 
+  // ── Statistici echipe ──────────────────────────────────────────────────────
+
+  const handleAddStats = (parsed) =>
+    setTeamStats((prev) => {
+      const next = { ...prev }
+      for (const t of parsed) next[statsKeyFor(t.team)] = t
+      return next
+    })
+
+  const handleDeleteStats = (key) =>
+    setTeamStats((prev) => {
+      const next = { ...prev }
+      delete next[key]
+      return next
+    })
+
+  // ── Backup complet (acceptă și formatul vechi: doar lista de bilete) ───────
+
+  // doar biletele bine-formate intră în istoric — câmpurile lor alimentează
+  // calculele de bancă/profit, deci orice valoare coruptă e respinsă
+  const mergeBets = (imported) => {
+    if (!Array.isArray(imported)) return 0
+    const known = new Set(bets.map((b) => b.id))
+    const fresh = imported.filter((b) => isValidBet(b) && !known.has(b.id))
+    if (fresh.length) {
+      setBets((prev) => {
+        const ids = new Set(prev.map((b) => b.id))
+        return [...fresh.filter((b) => !ids.has(b.id)), ...prev]
+      })
+    }
+    return fresh.length
+  }
+
+  const handleImportBackup = (data) => {
+    if (Array.isArray(data)) {
+      const added = mergeBets(data)
+      return added ? `✅ Backup vechi importat: ${added} bilete noi.` : '⚠️ Niciun bilet valid în fișier.'
+    }
+    if (!data || typeof data !== 'object') return null
+    const parts = []
+    if (Array.isArray(data.bets)) parts.push(`${mergeBets(data.bets)} bilete noi`)
+    const teamStats = sanitizeTeamStats(data.teamStats)
+    if (Object.keys(teamStats).length) {
+      setTeamStats((prev) => ({ ...prev, ...teamStats }))
+      parts.push(`${Object.keys(teamStats).length} echipe`)
+    }
+    const cleanSettings = sanitizeSettings(data.settings)
+    if (Object.keys(cleanSettings).length) {
+      // setările existente (ne-goale) au prioritate față de cele importate
+      setSettings((prev) => ({
+        ...cleanSettings,
+        ...Object.fromEntries(Object.entries(prev).filter(([, v]) => v !== '' && v != null)),
+      }))
+      parts.push('setări')
+    }
+    if (parts.length === 0) return '⚠️ Fișierul nu pare un backup valid.'
+    return `✅ Backup importat: ${parts.join(', ')}.`
+  }
+
+  // ── Render ─────────────────────────────────────────────────────────────────
+
   const activeBets = bets.filter((b) => b.status === 'În așteptare')
   const settledBets = bets.filter((b) => b.status !== 'În așteptare')
+  const periodBets = useMemo(() => filterByPeriod(bets, period), [bets, period])
 
   const TABS = [
     { id: 'analiza', label: '🧠 Analiză' },
@@ -1170,25 +401,42 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-950 bg-[radial-gradient(ellipse_at_top,rgba(16,185,129,0.08),transparent_60%)] px-4 py-6 text-slate-200">
       <div className="mx-auto max-w-7xl">
-        <header className="mb-4 flex items-center gap-3">
+        <header className="mb-4 flex flex-wrap items-center gap-3">
           <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500 via-emerald-600 to-violet-600 text-xl shadow-lg shadow-emerald-900/40">
             ⚡
           </div>
-          <div>
+          <div className="min-w-0">
             <h1 className="bg-gradient-to-r from-white via-slate-100 to-slate-400 bg-clip-text text-2xl font-extrabold tracking-tight text-transparent">
               Analizor & Tracker Pariuri
             </h1>
             <p className="text-xs text-slate-400">
-              WC 2026 · Tenis iarbă · Baschet · Baseball · model Poisson pe date reale
+              WC 2026 (Poisson) · Tenis iarbă (Elo: Final · Handicap seturi · Total game-uri) · Kelly staking
               {' '}· <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-emerald-400">{APP_VERSION}</span>
             </p>
           </div>
+          <div
+            className="ml-auto rounded-2xl border border-slate-800 bg-slate-900/70 px-4 py-2 text-right shadow-lg shadow-black/30"
+            title={`Bancă de start ${bankrollStart.toFixed(0)} RON (modificabilă în ⚙️ Setări) + profit net. În joc: mize nedecise.`}
+          >
+            <div className="text-[10px] uppercase tracking-wider text-slate-500">💰 Bancă</div>
+            <div className="font-mono text-lg font-bold leading-tight text-slate-100">
+              {bankNow.toFixed(0)} <span className="text-xs font-semibold text-slate-500">RON</span>
+              <span className={`ml-2 text-xs font-bold ${bankDelta >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                {bankDelta >= 0 ? '+' : ''}{bankDelta.toFixed(0)}
+              </span>
+            </div>
+            {inPlay > 0 && <div className="text-[10px] text-amber-400/80">{inPlay.toFixed(0)} RON în joc</div>}
+          </div>
         </header>
 
-        <nav className="sticky top-2 z-20 mb-5 flex gap-1.5 overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/90 p-1.5 backdrop-blur">
+        <nav role="tablist" aria-label="Secțiuni" className="sticky top-2 z-20 mb-5 flex gap-1.5 overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/90 p-1.5 backdrop-blur">
           {TABS.map((t) => (
             <button
               key={t.id}
+              role="tab"
+              id={`tab-${t.id}`}
+              aria-selected={tab === t.id}
+              aria-controls={`panel-${t.id}`}
               onClick={() => setTab(t.id)}
               className={`flex-1 whitespace-nowrap rounded-xl px-4 py-2.5 text-sm font-semibold transition active:scale-[0.98] ${
                 tab === t.id
@@ -1206,6 +454,7 @@ export default function App() {
           ))}
         </nav>
 
+        <main id={`panel-${tab}`} role="tabpanel" aria-labelledby={`tab-${tab}`} tabIndex={-1} className="outline-none">
         {tab === 'analiza' && (
           <div className="grid gap-5 lg:grid-cols-5">
             <div className="space-y-5 lg:col-span-3">
@@ -1214,25 +463,41 @@ export default function App() {
                 setRawText={setRawText}
                 onProcess={handleProcess}
                 onLoadReal={handleLoadReal}
+                onLoadDemo={handleLoadDemo}
                 loadingReal={loadingReal}
                 importMsg={importMsg}
               />
               {!bannerDismissed && <TicketBanner meta={ticketMeta} analyzed={analyzed} onImport={handleImportTicket} />}
-              <AnalysisEngine analyzed={analyzed} />
+              <AnalysisTable
+                key={analysisKey}
+                analyzed={analyzed}
+                picked={picked}
+                onTogglePick={handleTogglePick}
+              />
             </div>
-            <div className="lg:col-span-2">
+            <div className="space-y-5 lg:col-span-2">
+              <TicketBuilder
+                selections={pickedSelections}
+                onRemove={(id) => setPicked((prev) => prev.filter((x) => x !== id))}
+                onClear={() => setPicked([])}
+                onSave={handleSaveBuilder}
+                bankroll={bankNow}
+                kellyDivisor={kellyDivisor}
+              />
               <Suggestions
                 suggestions={suggestions}
                 stake={stake}
                 setStake={setStake}
                 onConfirm={handleConfirm}
+                bankroll={bankNow}
+                kellyDivisor={kellyDivisor}
               />
             </div>
           </div>
         )}
 
         {tab === 'active' && (
-          <History
+          <ActiveBets
             bets={activeBets}
             onStatusChange={handleStatusChange}
             onDelete={handleDelete}
@@ -1242,16 +507,33 @@ export default function App() {
             onVerifyOnline={handleVerifyOnline}
             verifying={verifying}
             verifyMsg={verifyMsg}
+            lastVerifyAt={lastVerifyAt}
+            autoVerifyMs={AUTO_VERIFY_MS}
           />
         )}
 
         {tab === 'istoric' && (
           <div className="space-y-5">
-            <StatsBar bets={bets} />
+            <div className="flex flex-wrap items-center gap-1.5 text-xs">
+              <span className="mr-1 text-slate-500">Perioadă:</span>
+              {PERIODS.map((p) => (
+                <button
+                  key={p.label}
+                  onClick={() => setPeriod(p.days)}
+                  className={`rounded-lg px-3 py-1.5 font-semibold transition ${
+                    period === p.days ? 'bg-emerald-600 text-white' : 'border border-slate-700 text-slate-400 hover:bg-slate-800'
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+            <StatsBar bets={periodBets} />
+            <Breakdowns bets={periodBets} />
             <CalendarView bets={bets} />
             <Card title="Bilete Decise" icon="📒">
               {settledBets.length === 0 ? (
-                <p className="text-sm text-slate-500">Niciun bilet decis încă. Biletele câștigate sau pierdute apar aici.</p>
+                <EmptyState>Niciun bilet decis încă. Biletele câștigate sau pierdute apar aici.</EmptyState>
               ) : (
                 <div className="space-y-3">
                   {settledBets.map((b) => (
@@ -1265,12 +547,23 @@ export default function App() {
 
         {tab === 'stats' && <TeamStatsPanel teamStats={teamStats} onAdd={handleAddStats} onDelete={handleDeleteStats} />}
 
-        {tab === 'setari' && <SettingsPanel settings={settings} onSave={handleSaveSettings} bets={bets} onImportBets={handleImportBets} />}
+        {tab === 'setari' && (
+          <SettingsPanel
+            key={`${settings.bankrollStart ?? ''}-${settings.kellyDivisor ?? ''}-${settings.apiFootballKey ?? ''}`}
+            settings={settings}
+            onSave={setSettings}
+            bets={bets}
+            teamStats={teamStats}
+            onImportBackup={handleImportBackup}
+          />
+        )}
+        </main>
 
         <footer className="mt-6 text-center text-xs text-slate-600">
           Model intern — pariază responsabil. Probabilitățile sunt estimări, nu garanții.
         </footer>
       </div>
+      <ToastHost toasts={toasts} onDismiss={dismissToast} />
     </div>
   )
 }
