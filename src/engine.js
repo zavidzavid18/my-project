@@ -296,7 +296,7 @@ export function detectTicketMeta(raw) {
 
 // ─── Analiză per selecție ───────────────────────────────────────────────────
 
-export function analyzeSelection(sel) {
+export function analyzeSelection(sel, statsDb = null) {
   const implied = 1 / sel.odds
   const reasons = []
   let modelProb
@@ -321,6 +321,8 @@ export function analyzeSelection(sel) {
   } else if (sel.sport === 'baseball') {
     engine = 'Model Baseball'
     modelProb = clamp(implied + 0.025 + jitter(sel.match, 0.025), 0.05, 0.95)
+  } else if (statsDb && (() => { const r = footballStatsModel(sel, statsDb); if (r) { modelProb = r.prob; engine = 'Poisson (statistici reale)'; reasons.push(...r.notes) } return !!r })()) {
+    // probabilitate calculată din statisticile reale ale echipelor
   } else {
     engine = 'Model Goluri (teren neutru)'
     if (sel.marketType === 'under25' || sel.marketType === 'ggnu') {
@@ -744,6 +746,193 @@ export async function fetchUpcomingMatches() {
     const odds = Math.max(1.5, Math.round((1.05 / p) * 100) / 100)
     return `${match} | ${market} | ${odds.toFixed(2)}`
   })
+}
+
+// ─── Statistici echipe (stil PlayerStats) + model Poisson ───────────────────
+// Utilizatorul lipește tabelul copiat de pe un site de statistici; reținem
+// media "pentru" (numărul mare) și "împotriva" (numărul mic) per indicator.
+
+const STAT_LABELS = [
+  { key: 'xgot', re: /^expected goals on target/i, skip: true },
+  { key: 'xg', re: /^expected goals/i },
+  { key: 'gol', re: /^goals?$/i },
+  { key: 'corn', re: /^(total\s+)?corners?$/i },
+  { key: 'sot', re: /^shots?\s*[-–]?\s*on target$/i },
+  { key: 'sav', re: /^saves?$/i },
+  { key: 'pos', re: /^possession$/i, percent: true },
+]
+
+export function parseTeamStats(raw) {
+  const lines = raw.split('\n').map((l) => l.trim()).filter(Boolean)
+  const teams = []
+  let current = null
+  const numsOf = (s) => (s.match(/\d+(?:[.,]\d+)?%?/g) ?? []).map((x) => num(x.replace('%', '')))
+
+  for (let i = 0; i < lines.length; i++) {
+    const header = lines[i].match(/^(.+?)\s+Stats$/i)
+    if (header) {
+      current = { team: header[1].trim(), stats: {} }
+      teams.push(current)
+      continue
+    }
+    if (!current) continue
+    const label = STAT_LABELS.find((l) => l.re.test(lines[i]))
+    if (!label) continue
+    // numerele pot fi pe aceeași linie sau pe liniile următoare
+    let nums = numsOf(lines[i].replace(label.re, ''))
+    let j = i + 1
+    while (nums.length < 2 && j < lines.length && numsOf(lines[j]).length > 0 && !/[a-z]{3,}/i.test(lines[j].replace(/%/g, ''))) {
+      nums = nums.concat(numsOf(lines[j]))
+      j += 1
+    }
+    if (label.skip || nums.length === 0) continue
+    const scale = label.percent ? 0.01 : 1
+    current.stats[`${label.key}For`] = nums[0] * scale
+    if (nums[1] != null) current.stats[`${label.key}Ag`] = nums[1] * scale
+  }
+  return teams.filter((t) => Object.keys(t.stats).length > 0)
+}
+
+export const statsKeyFor = (teamName) => norm(teamName)
+
+// nume alternative frecvente (bilete RO vs. site-uri de statistici EN)
+const TEAM_ALIASES = {
+  'sua': 'united states', 'usa': 'united states',
+  'olanda': 'netherlands', 'tarile de jos': 'netherlands',
+  'coreea de sud': 'south korea', 'anglia': 'england',
+}
+
+export function lookupTeamStats(statsDb, teamName) {
+  if (!statsDb) return null
+  const tryKeys = []
+  const n = norm(teamName)
+  tryKeys.push(n)
+  if (TEAM_ALIASES[n]) tryKeys.push(TEAM_ALIASES[n])
+  const en = RO_EN_TEAMS[n]
+  if (en) {
+    tryKeys.push(norm(en))
+    if (TEAM_ALIASES[norm(en)]) tryKeys.push(TEAM_ALIASES[norm(en)])
+  }
+  for (const k of tryKeys) if (statsDb[k]) return statsDb[k]
+  // și invers: în bilet e numele englez, în baza de date cel românesc
+  for (const [ro, enName] of Object.entries(RO_EN_TEAMS)) {
+    if (norm(enName) === n && statsDb[ro]) return statsDb[ro]
+  }
+  return null
+}
+
+// Poisson
+const factCache = [1]
+const fact = (k) => factCache[k] ?? (factCache[k] = k * fact(k - 1))
+const poissonPmf = (l, k) => (Math.exp(-l) * Math.pow(l, k)) / fact(k)
+const poissonCdf = (l, k) => {
+  let s = 0
+  for (let i = 0; i <= k; i++) s += poissonPmf(l, i)
+  return s
+}
+
+// Modelul real: probabilități din mediile celor două echipe.
+// Returnează null când piața nu e acoperită sau lipsesc datele.
+export function footballStatsModel(sel, statsDb) {
+  const teams = splitMatch(sel.match)
+  if (teams.length < 2) return null
+  const A = lookupTeamStats(statsDb, teams[0])
+  const B = lookupTeamStats(statsDb, teams[1])
+  if (!A || !B) return null
+  const m = norm(sel.market)
+  const pick = (m.split(':').pop() || '').trim()
+
+  const lam = (forA, agB) => (forA != null && agB != null ? (forA + agB) / 2 : forA)
+  // atac echipă temperat de apărarea adversarului (xG dacă există, altfel goluri)
+  const lamGoals = (S, O) => lam(S.xgFor ?? S.golFor, O.xgAg ?? O.golAg)
+  const l1 = lamGoals(A, B)
+  const l2 = lamGoals(B, A)
+  if (l1 == null || l2 == null) return null
+
+  const clampP = (p) => clamp(p, 0.03, 0.97)
+  const lineMatch = m.match(/(\d+)[.,]5/)
+  const line = lineMatch ? Number(lineMatch[1]) : null
+  const isUnder = /sub|under/.test(pick) || /(sub|under)\s*\d+[.,]5/.test(m)
+  const note = (txt) => [`Model Poisson pe statistici reale: ${txt}`]
+
+  // domeniu statistic: cornere / șuturi pe poartă / salvări / goluri
+  const domain = /cornere|corner/.test(m) ? 'corn' : /sutur.*poarta|on target/.test(m) ? 'sot' : /mingi salvate|saves/.test(m) ? 'sav' : 'gol'
+
+  if (domain !== 'gol') {
+    if (line == null) return null
+    const dFor = (S) => S[`${domain}For`]
+    const dAg = (S) => S[`${domain}Ag`]
+    if (dFor(A) == null || dFor(B) == null) return null
+    const sideIdx = (() => {
+      const name = m.split(':')[0]
+      if (norm(teams[1]) && name.includes(norm(teams[1]))) return 1
+      if (norm(teams[0]) && name.includes(norm(teams[0]))) return 0
+      return -1
+    })()
+    const lamStat = sideIdx === -1
+      ? lam(dFor(A), dAg(B)) + lam(dFor(B), dAg(A))
+      : lam(dFor(sideIdx === 0 ? A : B), dAg(sideIdx === 0 ? B : A))
+    const pOver = 1 - poissonCdf(lamStat, line)
+    return { prob: clampP(isUnder ? 1 - pOver : pOver), notes: note(`λ=${lamStat.toFixed(2)} pentru linia ${line}.5`) }
+  }
+
+  // goluri: distribuție dublă Poisson
+  const P1 = [], P2 = []
+  for (let k = 0; k <= 10; k++) { P1.push(poissonPmf(l1, k)); P2.push(poissonPmf(l2, k)) }
+  let pHome = 0, pDraw = 0, pAway = 0
+  const totalDist = new Array(21).fill(0)
+  for (let a = 0; a <= 10; a++) for (let b = 0; b <= 10; b++) {
+    const p = P1[a] * P2[b]
+    totalDist[a + b] += p
+    if (a > b) pHome += p
+    else if (a === b) pDraw += p
+    else pAway += p
+  }
+  const pTotalOver = (ln) => { let s = 0; for (let t = ln + 1; t <= 20; t++) s += totalDist[t]; return s }
+  const pGG = (1 - Math.exp(-l1)) * (1 - Math.exp(-l2))
+  const baseNote = `λ ${teams[0]} ${l1.toFixed(2)} · λ ${teams[1]} ${l2.toFixed(2)}`
+
+  if (sel.marketType === 'under25') return { prob: clampP(1 - pTotalOver(2)), notes: note(baseNote) }
+  if (sel.marketType === 'ggnu') return { prob: clampP(1 - pGG), notes: note(baseNote) }
+  if (/gg sau peste 2[.,]5/.test(m)) {
+    const yes = pGG + pTotalOver(2) - pGG * pTotalOver(2)
+    return { prob: clampP(/\bnu$/.test(pick) ? 1 - yes : yes), notes: note(baseNote) }
+  }
+  if (/gg sau egalitate/.test(m)) {
+    const yes = pGG + pDraw - pGG * pDraw
+    return { prob: clampP(/\bnu$/.test(pick) ? 1 - yes : yes), notes: note(baseNote) }
+  }
+  if (/\bgg\b|ambele(?:\s+\S+)* inscriu/.test(m)) {
+    return { prob: clampP(/\bnu$/.test(pick) ? 1 - pGG : pGG), notes: note(baseNote) }
+  }
+  if (sel.marketType === 'sansa_dubla') {
+    if (pick.includes('1x')) return { prob: clampP(pHome + pDraw), notes: note(baseNote) }
+    if (pick.includes('x2')) return { prob: clampP(pAway + pDraw), notes: note(baseNote) }
+    if (pick.includes('12')) return { prob: clampP(pHome + pAway), notes: note(baseNote) }
+    return null
+  }
+  if (sel.marketType === 'winner') {
+    const token = pick.split(/[\s(]+/)[0]
+    if (token === '1') return { prob: clampP(pHome), notes: note(baseNote) }
+    if (token === '2') return { prob: clampP(pAway), notes: note(baseNote) }
+    if (token === 'x') return { prob: clampP(pDraw), notes: note(baseNote) }
+    if (pick.includes(norm(teams[0]))) return { prob: clampP(pHome), notes: note(baseNote) }
+    if (pick.includes(norm(teams[1]))) return { prob: clampP(pAway), notes: note(baseNote) }
+    return null
+  }
+  if (line != null) {
+    // total goluri / goluri echipă cu linie
+    const name = m.split(':')[0]
+    const teamIdx = norm(teams[1]) && name.includes(norm(teams[1])) ? 1 : norm(teams[0]) && name.includes(norm(teams[0])) ? 0 : -1
+    if (teamIdx === -1) {
+      const pOver = pTotalOver(line)
+      return { prob: clampP(isUnder ? 1 - pOver : pOver), notes: note(baseNote) }
+    }
+    const lt = teamIdx === 0 ? l1 : l2
+    const pOver = 1 - poissonCdf(lt, line)
+    return { prob: clampP(isUnder ? 1 - pOver : pOver), notes: note(`λ ${teams[teamIdx]} ${lt.toFixed(2)}`) }
+  }
+  return null
 }
 
 // ─── Generator de bilete ────────────────────────────────────────────────────

@@ -7,6 +7,8 @@ import {
   detectTicketMeta,
   fetchScoreOnline,
   fetchUpcomingMatches,
+  parseTeamStats,
+  statsKeyFor,
   parseRawText,
   parseResults,
   selectionOutcome,
@@ -14,7 +16,7 @@ import {
   splitMatch,
 } from './engine.js'
 
-const APP_VERSION = 'v4.5'
+const APP_VERSION = 'v5.0'
 const SETTINGS_KEY = 'betting-analyzer-settings'
 
 const loadSettings = () => {
@@ -436,6 +438,100 @@ function SettingsPanel({ settings, onSave, bets, onImportBets }) {
   )
 }
 
+// ─── Statistici Echipe (stil PlayerStats) ───────────────────────────────────
+
+const STAT_COLS = [
+  { key: 'gol', label: 'Goluri' },
+  { key: 'xg', label: 'xG' },
+  { key: 'corn', label: 'Cornere' },
+  { key: 'sot', label: 'Șuturi pe poartă' },
+  { key: 'sav', label: 'Salvări' },
+  { key: 'pos', label: 'Posesie', percent: true },
+]
+
+function TeamStatsPanel({ teamStats, onAdd, onDelete }) {
+  const [raw, setRaw] = useState('')
+  const [msg, setMsg] = useState('')
+  const teams = Object.entries(teamStats)
+  return (
+    <div className="space-y-5">
+      <Card title="Adaugă Statistici Echipe" icon="📈" accent="border-violet-900/60">
+        <p className="mb-2 text-xs text-slate-400">
+          Copiază tabelul de statistici al unei echipe (ex. de pe <span className="font-semibold text-slate-300">PlayerStats</span>:
+          selectezi tot, de la „Echipa Stats" în jos, Ctrl+C) și lipește-l aici. Rețin mediile —
+          <span className="text-violet-300"> numărul mare = al echipei</span>, <span className="text-slate-300">cel mic = al adversarilor</span> —
+          iar analiza fotbal trece automat pe <span className="font-semibold text-violet-300">modelul Poisson cu date reale</span>.
+        </p>
+        <textarea
+          value={raw}
+          onChange={(e) => setRaw(e.target.value)}
+          rows={6}
+          spellCheck={false}
+          placeholder={'Paraguay Stats\nGoals  0.86  1.03 ...\nExpected Goals (xG)  1.07  0.98 ...\nCorners  3.97  4.45 ...'}
+          className="w-full resize-y rounded-xl border border-slate-700 bg-slate-950 p-3 font-mono text-xs text-slate-200 outline-none transition focus:border-violet-500"
+        />
+        <button
+          onClick={() => {
+            const parsed = parseTeamStats(raw)
+            if (parsed.length === 0) { setMsg('⚠️ Nu am găsit niciun „Echipă Stats" cu indicatori în text.'); return }
+            onAdd(parsed)
+            setRaw('')
+            setMsg(`✅ Salvat: ${parsed.map((t) => t.team).join(', ')}`)
+          }}
+          className="mt-3 rounded-xl bg-gradient-to-r from-violet-600 to-violet-500 px-4 py-2.5 font-semibold text-white shadow-lg shadow-violet-900/40 transition hover:from-violet-500 hover:to-violet-400 active:scale-[0.98]"
+        >
+          📈 Salvează statisticile
+        </button>
+        {msg && <p className="mt-2 text-xs text-slate-400">{msg}</p>}
+      </Card>
+
+      <Card title={`Echipe cu statistici (${teams.length})`} icon="🗂️">
+        {teams.length === 0 ? (
+          <p className="text-sm text-slate-500">Nicio echipă încă. Lipește un tabel mai sus — apoi orice meci dintre echipe cunoscute se analizează cu date reale.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-slate-800 text-xs uppercase tracking-wider text-slate-500">
+                  <th className="pb-2 pr-3">Echipă</th>
+                  {STAT_COLS.map((c) => <th key={c.key} className="pb-2 pr-3">{c.label}</th>)}
+                  <th className="pb-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {teams.map(([key, t]) => (
+                  <tr key={key} className="border-b border-slate-800/60 transition hover:bg-slate-800/30">
+                    <td className="py-2.5 pr-3 font-semibold capitalize text-slate-200">{t.team ?? key}</td>
+                    {STAT_COLS.map((c) => {
+                      const f = t.stats[`${c.key}For`]
+                      const a = t.stats[`${c.key}Ag`]
+                      const fmt = (v) => (v == null ? '—' : c.percent ? `${Math.round(v * 100)}%` : v.toFixed(2))
+                      return (
+                        <td key={c.key} className="py-2.5 pr-3">
+                          <span className="font-mono text-base font-bold text-violet-300">{fmt(f)}</span>
+                          {a != null && <span className="ml-1 align-bottom font-mono text-[10px] text-slate-500">{fmt(a)}</span>}
+                        </td>
+                      )
+                    })}
+                    <td className="py-2.5 text-right">
+                      <button
+                        onClick={() => onDelete(key)}
+                        className="rounded-lg px-2 py-1 text-xs text-slate-500 transition hover:bg-rose-500/10 hover:text-rose-400"
+                      >
+                        ✕
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+    </div>
+  )
+}
+
 // ─── Statistici (stil Pikkit) ────────────────────────────────────────────────
 
 const betProfit = (b) =>
@@ -791,6 +887,31 @@ export default function App() {
   const [loadingReal, setLoadingReal] = useState(false)
   const [importMsg, setImportMsg] = useState('')
   const [settings, setSettings] = useState(loadSettings)
+  const [teamStats, setTeamStats] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('analyzer-team-stats')) ?? {}
+    } catch {
+      return {}
+    }
+  })
+
+  useEffect(() => {
+    localStorage.setItem('analyzer-team-stats', JSON.stringify(teamStats))
+  }, [teamStats])
+
+  const handleAddStats = (parsed) =>
+    setTeamStats((prev) => {
+      const next = { ...prev }
+      for (const t of parsed) next[statsKeyFor(t.team)] = t
+      return next
+    })
+
+  const handleDeleteStats = (key) =>
+    setTeamStats((prev) => {
+      const next = { ...prev }
+      delete next[key]
+      return next
+    })
 
   const handleSaveSettings = (next) => {
     setSettings(next)
@@ -810,8 +931,14 @@ export default function App() {
 
   const suggestions = useMemo(() => buildSuggestions(analyzed), [analyzed])
 
+  const statsDb = useMemo(() => {
+    const db = {}
+    for (const [k, v] of Object.entries(teamStats)) db[k] = v.stats
+    return Object.keys(db).length ? db : null
+  }, [teamStats])
+
   const handleProcess = () => {
-    setAnalyzed(parseRawText(rawText).map(analyzeSelection))
+    setAnalyzed(parseRawText(rawText).map((s) => analyzeSelection(s, statsDb)))
     setTicketMeta(detectTicketMeta(rawText))
     setBannerDismissed(false)
   }
@@ -823,7 +950,7 @@ export default function App() {
       const lines = await fetchUpcomingMatches()
       const text = lines.join('\n')
       setRawText(text)
-      setAnalyzed(parseRawText(text).map(analyzeSelection))
+      setAnalyzed(parseRawText(text).map((s) => analyzeSelection(s, statsDb)))
       setTicketMeta(null)
       setImportMsg(`📡 ${lines.length} meciuri oficiale WC 2026 încărcate. Cotele sunt orientative — înlocuiește-le cu cele de pe Betano și apasă din nou Procesează.`)
     } catch (e) {
@@ -986,21 +1113,27 @@ export default function App() {
   const TABS = [
     { id: 'analiza', label: '🧠 Analiză' },
     { id: 'active', label: '⏳ Bilete Active', count: activeBets.length },
-    { id: 'istoric', label: '📊 Istoric & Statistici' },
+    { id: 'stats', label: '📈 Statistici', count: Object.keys(teamStats).length },
+    { id: 'istoric', label: '📊 Istoric' },
     { id: 'setari', label: '⚙️ Setări' },
   ]
 
   return (
     <div className="min-h-screen bg-slate-950 bg-[radial-gradient(ellipse_at_top,rgba(16,185,129,0.08),transparent_60%)] px-4 py-6 text-slate-200">
       <div className="mx-auto max-w-7xl">
-        <header className="mb-4">
-          <h1 className="text-2xl font-bold tracking-tight text-white">
-            ⚽🎾 Analizor & Tracker Pariuri
-          </h1>
-          <p className="text-sm text-slate-400">
-            World Cup 2026 · ATP/WTA Iarbă · Baschet · Baseball · cotă min. {COTA_MINIMA.toFixed(2)}
-            {' '}· <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-xs text-emerald-400">{APP_VERSION}</span>
-          </p>
+        <header className="mb-4 flex items-center gap-3">
+          <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500 via-emerald-600 to-violet-600 text-xl shadow-lg shadow-emerald-900/40">
+            ⚡
+          </div>
+          <div>
+            <h1 className="bg-gradient-to-r from-white via-slate-100 to-slate-400 bg-clip-text text-2xl font-extrabold tracking-tight text-transparent">
+              Analizor & Tracker Pariuri
+            </h1>
+            <p className="text-xs text-slate-400">
+              WC 2026 · Tenis iarbă · Baschet · Baseball · model Poisson pe date reale
+              {' '}· <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-emerald-400">{APP_VERSION}</span>
+            </p>
+          </div>
         </header>
 
         <nav className="sticky top-2 z-20 mb-5 flex gap-1.5 overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/90 p-1.5 backdrop-blur">
@@ -1080,6 +1213,8 @@ export default function App() {
             </Card>
           </div>
         )}
+
+        {tab === 'stats' && <TeamStatsPanel teamStats={teamStats} onAdd={handleAddStats} onDelete={handleDeleteStats} />}
 
         {tab === 'setari' && <SettingsPanel settings={settings} onSave={handleSaveSettings} bets={bets} onImportBets={handleImportBets} />}
 
